@@ -11,6 +11,7 @@ import { chatFromRule } from '../telegram/peers.js';
 import type { ChatKind, ResolvedChat } from '../types.js';
 import { SerialQueue } from '../util/serial-queue.js';
 import { formatChat, formatLog, formatRule, helpText, kindPrompt, oneLine, ruleSummary } from './copy.js';
+import { mdEscape } from './rich-text.js';
 import { dialogLines, REPLY_PLACEHOLDER, replyNudge, type Dialog } from './dialog.js';
 import {
   chatPickerRows,
@@ -105,7 +106,7 @@ class Manager {
         if (!keepManual) this.wizard.clear();
         await this.show(ctx, {
           title: keepManual ? 'Try another chat' : 'Something went wrong',
-          lines: [safe],
+          lines: [mdEscape(safe)],
           rows: keepManual ? manualRows() : mainMenuRows(),
           ...(keepManual ? { replyPlaceholder: REPLY_PLACEHOLDER } : {}),
         }).catch(() => undefined);
@@ -249,7 +250,7 @@ class Manager {
     wizard.updatedAt = Date.now();
     await this.show(ctx, {
       title: 'Username or id',
-      lines: ['Send a public @username, a https://t.me/name link, or a numeric chat id. Invite links are not accepted.'],
+      lines: ['Send a public `@username`, a `https://t.me/name` link, or a numeric chat id. Invite links are not accepted.'],
       rows: manualRows(),
       replyPlaceholder: REPLY_PLACEHOLDER,
     });
@@ -349,7 +350,7 @@ class Manager {
       wizard.phase = 'dest-kind';
       await this.show(ctx, {
         title: 'Destination',
-        lines: dialogLines(`Source selected. ${formatChat(chat)}`, kindPrompt('destination')),
+        lines: dialogLines(`**Source selected.** ${formatChat(chat)}`, kindPrompt('destination')),
         rows: kindRows(),
       });
       return;
@@ -433,7 +434,7 @@ class Manager {
             : 'Deleting a rule leaves messages already delivered in Telegram.';
     await this.show(ctx, {
       title,
-      lines: dialogLines(intro, ...slice.items.map((rule) => formatRule(rule))),
+      lines: dialogLines(intro, slice.items.map((rule) => formatRule(rule)).join('\n---\n')),
       rows: rulesRows(slice, mode),
     });
   }
@@ -524,9 +525,9 @@ class Manager {
     await this.show(ctx, {
       title: 'Settings',
       lines: [
-        `User client: ${this.deps.connected() ? 'connected' : 'disconnected'}`,
-        `Active rules: ${counts.active}`,
-        `Paused rules: ${counts.paused}`,
+        `**User client.** ${this.deps.connected() ? 'connected' : 'disconnected'}`,
+        `**Active rules.** ${counts.active}`,
+        `**Paused rules.** ${counts.paused}`,
         'Menu access is limited to the configured user.',
         'Pausing does not delete rules. Resuming does not backfill older messages.',
       ],
@@ -572,8 +573,8 @@ class Manager {
     await this.show(ctx, {
       title: 'Telesyncra',
       lines: [
-        'Forward new messages from chats your account can access.',
-        'This bot only controls the rules. It does not read your private chats.',
+        'Forward **new** messages from chats your account can access.',
+        '*This bot only controls the rules. It does not read your private chats.*',
       ],
       rows: mainMenuRows(),
     });
@@ -585,10 +586,10 @@ class Manager {
     await this.show(ctx, {
       title: 'Status',
       lines: [
-        `User client: ${this.deps.connected() ? 'connected' : 'disconnected'}`,
-        `Account id: ${selfId ?? 'unavailable'}`,
-        `Active rules: ${counts.active}`,
-        `Paused rules: ${counts.paused}`,
+        `**User client.** ${this.deps.connected() ? 'connected' : 'disconnected'}`,
+        `**Account id.** ${selfId ?? 'unavailable'}`,
+        `**Active rules.** ${counts.active}`,
+        `**Paused rules.** ${counts.paused}`,
         'Menu access is limited to the configured user.',
         'Session file: stored locally with restricted permissions.',
       ],

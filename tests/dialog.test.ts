@@ -1,7 +1,9 @@
-import type { InputRichBlock, RichMessageButton } from 'node-telegram-bot-api';
+import type { InputRichBlock } from 'node-telegram-bot-api';
 import { describe, expect, it } from 'vitest';
 import { parseCallback } from '../src/access/callbacks.js';
-import { dialogLines, renderDialog, replyMarkup, replyNudge, type Dialog } from '../src/bot/dialog.js';
+import { dialogKeyboard, dialogLines, renderDialog, replyMarkup, replyNudge, type Dialog } from '../src/bot/dialog.js';
+import { formatChat } from '../src/bot/copy.js';
+import { richInline } from '../src/bot/rich-text.js';
 import {
   chatPickerRows,
   confirmRows,
@@ -27,10 +29,11 @@ describe('dialog', () => {
       'Forward new messages.',
       'This bot only controls the rules.',
     ]);
-    expect(blocks.some((block) => block.type === 'divider')).toBe(true);
-    const buttons = buttonRows(blocks).flat();
+    expect(blocks.some((block) => block.type === 'buttons')).toBe(false);
+    const keyboard = dialogKeyboard(dialog.rows);
+    const buttons = keyboard?.inline_keyboard.flat() ?? [];
     expect(buttons[0]).toMatchObject({ text: 'Create a rule', callback_data: 'new', style: 'primary' });
-    expect(buttons.map((item) => item.callback_data).every((data) => parseCallback(data) !== null)).toBe(true);
+    expect(buttons.map((item) => item.callback_data).every((data) => data !== undefined && parseCallback(data) !== null)).toBe(true);
     expect(replyMarkup('username or chat id')).toEqual({
       force_reply: true,
       input_field_placeholder: 'username or chat id',
@@ -50,10 +53,11 @@ describe('dialog', () => {
     };
     const rich = renderDialog(dialog);
     expect(textBlocks(rich.blocks ?? [], 'paragraph').join('\n')).toContain('<script>');
-    expect(JSON.stringify(rich)).not.toContain('callback_data":"<');
-    const buttons = buttonRows(rich.blocks ?? []);
+    expect(JSON.stringify(rich)).not.toContain('callback_data');
+    const buttons = dialogKeyboard(dialog.rows)?.inline_keyboard ?? [];
     expect(buttons[1]?.map((item) => item.callback_data)).toEqual(['page:0', 'page:2']);
-    expect(buttons.at(-1)?.map((item) => item.text)).toEqual(['Back', 'Cancel']);
+    expect(buttons.at(-2)?.map((item) => item.text)).toEqual(['Back']);
+    expect(buttons.at(-1)?.map((item) => item.text)).toEqual(['Cancel']);
 
     const nudge = replyNudge('username or chat id');
     expect(nudge.replyPlaceholder).toBe('username or chat id');
@@ -75,15 +79,38 @@ describe('dialog', () => {
     expect(rows[0]?.[0]).toMatchObject({ data: 'toggle-id:3', style: 'success' });
     expect(rows[1]?.[0]?.style).toBeUndefined();
     expect(kindRows().flat().every((item) => parseCallback(item.data) !== null)).toBe(true);
+    expect(dialogKeyboard(mainMenuRows())?.inline_keyboard[4]?.[0]).toMatchObject({
+      text: 'Delete a rule',
+      style: 'danger',
+    });
+  });
+
+  it('formats dialog copy and leaves chat titles literal', () => {
+    const rich = renderDialog({
+      title: 'Review the rule',
+      lines: dialogLines(
+        `**From** ${formatChat(makeChat({ kind: 'user', markedId: '10', title: '**Ada**' }))}`,
+        '- Messages sent by your account are skipped.',
+        '---',
+        '*Sender hidden*',
+      ),
+      rows: [],
+    });
+    const blocks = rich.blocks ?? [];
+    const from = blocks.find((block) => block.type === 'paragraph' && 'text' in block && Array.isArray(block.text));
+    expect(from && 'text' in from ? from.text : []).toEqual([
+      { type: 'bold', text: 'From' },
+      ' private user: **Ada** [10]',
+    ]);
+    expect(blocks.some((block) => block.type === 'list')).toBe(true);
+    expect(blocks.some((block) => block.type === 'divider')).toBe(true);
+    expect(richInline('*Sender hidden*')).toEqual([{ type: 'italic', text: 'Sender hidden' }]);
+    expect(dialogKeyboard([])).toBeUndefined();
   });
 });
 
 function textBlocks(blocks: readonly InputRichBlock[], type: string): string[] {
   return blocks.flatMap((block) => (block.type === type && 'text' in block && typeof block.text === 'string' ? [block.text] : []));
-}
-
-function buttonRows(blocks: readonly InputRichBlock[]): RichMessageButton[][] {
-  return blocks.flatMap((block) => ('buttons' in block ? [block.buttons] : []));
 }
 
 function rule(id: number, status: Rule['status']): Rule {

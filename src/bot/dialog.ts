@@ -1,5 +1,13 @@
-import { RichMessageBuilder, richMessageButton, type ForceReply, type InputRichMessage } from 'node-telegram-bot-api';
+import {
+  RichMessageBuilder,
+  richListItem,
+  type ForceReply,
+  type InlineKeyboardButton,
+  type InlineKeyboardMarkup,
+  type InputRichMessage,
+} from 'node-telegram-bot-api';
 import { oneLine } from './copy.js';
+import { richInline } from './rich-text.js';
 
 export type ButtonStyle = 'primary' | 'success' | 'danger';
 
@@ -9,7 +17,7 @@ export interface DialogButton {
   style?: ButtonStyle;
 }
 
-/** One screen of the control dialog. Buttons are drawn inside the message. */
+/** One screen of the control dialog. Buttons are the full-width keyboard under the message. */
 export interface Dialog {
   title: string;
   lines: readonly string[];
@@ -42,24 +50,65 @@ export function dialogLines(...parts: string[]): string[] {
 
 export function renderDialog(dialog: Dialog): InputRichMessage {
   const builder = new RichMessageBuilder().heading(oneLine(dialog.title, 80), 2);
-  for (const line of dialog.lines) {
-    const text = oneLine(line, 1000);
-    if (text !== 'Untitled chat' || line.trim() === 'Untitled chat') builder.paragraph(text);
-  }
-  const rows = dialog.rows.flatMap((row) => chunk(row.filter((item) => item.data.length > 0), BUTTONS_PER_ROW));
-  if (rows.length > 0) builder.divider();
-  for (const row of rows) {
-    builder.buttons(
-      row.map((item) => {
-        const style = item.style;
-        return richMessageButton(oneLine(item.label, 64), {
-          callback_data: item.data,
-          ...(style ? { style } : {}),
-        });
-      }),
-    );
-  }
+  appendLines(builder, dialog.lines);
   return builder.build();
+}
+
+/** Full-width keyboard under the message. Empty when the screen has no actions. */
+export function dialogKeyboard(rows: Dialog['rows']): InlineKeyboardMarkup | undefined {
+  const keyboard = rows
+    .flatMap((row) => chunk(row.filter((item) => item.data.length > 0), BUTTONS_PER_ROW))
+    .map((row) => row.map(keyboardButton));
+  if (keyboard.length === 0) return undefined;
+  return { inline_keyboard: keyboard };
+}
+
+function keyboardButton(item: DialogButton): InlineKeyboardButton {
+  const style = item.style;
+  return {
+    text: oneLine(item.label, 64),
+    callback_data: item.data,
+    ...(style ? { style } : {}),
+  };
+}
+
+function appendLines(builder: RichMessageBuilder, lines: readonly string[]): void {
+  let index = 0;
+  while (index < lines.length) {
+    const line = oneLine(lines[index] ?? '', 1000);
+    if (line === '---') {
+      builder.divider();
+      index += 1;
+      continue;
+    }
+    if (line.startsWith('- ')) {
+      const items = [];
+      while (index < lines.length) {
+        const item = oneLine(lines[index] ?? '', 1000);
+        if (!item.startsWith('- ')) break;
+        const text = richInline(item.slice(2));
+        items.push(richListItem((nested) => nested.paragraph(text)));
+        index += 1;
+      }
+      if (items.length > 0) builder.list(items);
+      continue;
+    }
+    if (line.startsWith('> ')) {
+      const quoted: string[] = [];
+      while (index < lines.length) {
+        const item = oneLine(lines[index] ?? '', 1000);
+        if (!item.startsWith('> ')) break;
+        quoted.push(item.slice(2));
+        index += 1;
+      }
+      builder.blockquote((nested) => {
+        for (const item of quoted) nested.paragraph(richInline(item));
+      });
+      continue;
+    }
+    if (line !== 'Untitled chat' || (lines[index] ?? '').trim() === 'Untitled chat') builder.paragraph(richInline(line));
+    index += 1;
+  }
 }
 
 /** Reply markup that opens the native reply bar. Only valid on a newly sent message. */

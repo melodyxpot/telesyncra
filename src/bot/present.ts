@@ -1,5 +1,5 @@
-import { TelegramApiError, type Context, type InputRichMessage } from 'node-telegram-bot-api';
-import { renderDialog, replyMarkup, type Dialog } from './dialog.js';
+import { TelegramApiError, type Context, type InlineKeyboardMarkup, type InputRichMessage } from 'node-telegram-bot-api';
+import { dialogKeyboard, renderDialog, replyMarkup, type Dialog } from './dialog.js';
 
 export interface Presented {
   kind: 'edited' | 'sent';
@@ -25,13 +25,18 @@ export async function present(ctx: Context, dialog: Dialog): Promise<Presented> 
     return { kind: 'sent', messageId: sent.message_id };
   }
 
+  const keyboard = dialogKeyboard(dialog.rows);
   const messageId = ctx.callbackQuery?.message?.message_id;
   if (messageId !== undefined) {
-    const edited = await editDialog(ctx, chatId, messageId, rich);
+    const edited = await editDialog(ctx, chatId, messageId, rich, keyboard ?? { inline_keyboard: [] });
     if (edited !== 'replace') return { kind: 'edited', messageId };
   }
 
-  const sent = await ctx.api.sendRichMessage({ chat_id: chatId, rich_message: rich });
+  const sent = await ctx.api.sendRichMessage({
+    chat_id: chatId,
+    rich_message: rich,
+    ...(keyboard ? { reply_markup: keyboard } : {}),
+  });
   return { kind: 'sent', messageId: sent.message_id };
 }
 
@@ -44,13 +49,14 @@ async function editDialog(
   chatId: number,
   messageId: number,
   rich: InputRichMessage,
+  markup: InlineKeyboardMarkup,
 ): Promise<'edited' | 'replace'> {
   try {
     await ctx.api.editMessageText({
       chat_id: chatId,
       message_id: messageId,
       rich_message: rich,
-      reply_markup: { inline_keyboard: [] },
+      reply_markup: markup,
     });
     return 'edited';
   } catch (error) {
