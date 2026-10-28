@@ -19,6 +19,7 @@ export interface CreateWizard {
   destKind?: ChatKind;
   source?: ResolvedChat;
   destination?: ResolvedChat;
+  hideSender: boolean;
   candidates: ResolvedChat[];
   page: number;
   updatedAt: number;
@@ -60,7 +61,7 @@ export class WizardStore {
 }
 
 export function createWizard(now = Date.now()): CreateWizard {
-  return { type: 'create', phase: 'source-kind', candidates: [], page: 0, updatedAt: now };
+  return { type: 'create', phase: 'source-kind', hideSender: true, candidates: [], page: 0, updatedAt: now };
 }
 
 export function editWizard(ruleId: number, field: 'source' | 'dest', now = Date.now()): EditWizard {

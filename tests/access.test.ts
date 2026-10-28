@@ -37,6 +37,9 @@ describe('access control', () => {
     expect(parseCallback('logs:3')).toEqual({ type: 'logs', page: 3 });
     expect(parseCallback('set-clear-yes')).toEqual({ type: 'clear_logs' });
     expect(parseCallback('ok')).toEqual({ type: 'confirm' });
+    expect(parseCallback('sender:1')).toEqual({ type: 'hide_sender', hide: true });
+    expect(parseCallback('sender:0')).toEqual({ type: 'hide_sender', hide: false });
+    expect(parseCallback('sender-id:4')).toEqual({ type: 'hide_sender_rule', ruleId: 4 });
 
     expect(parseCallback(undefined)).toBeNull();
     expect(parseCallback('')).toBeNull();

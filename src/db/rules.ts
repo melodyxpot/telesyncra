@@ -8,12 +8,13 @@ export interface NewRuleInput {
   destination: ResolvedChat;
   selfUserId: string;
   baselineMessageId: number;
+  hideSender?: boolean;
 }
 
 const SELECT_RULE = `
   id, source_kind, source_marked_id, source_raw_id, source_peer_class, source_title, source_username, source_access_hash,
   dest_kind, dest_marked_id, dest_raw_id, dest_peer_class, dest_title, dest_username, dest_access_hash,
-  status, baseline_message_id, created_at, updated_at
+  status, hide_sender, baseline_message_id, created_at, updated_at
 `;
 
 export class RuleRepository {
@@ -29,9 +30,9 @@ export class RuleRepository {
       const result = this.database.prepare(`
         INSERT INTO rules (
           source_kind, source_marked_id, source_raw_id, source_peer_class, source_title, source_username, source_access_hash,
-          dest_kind, dest_marked_id, dest_raw_id, dest_peer_class, dest_title, dest_username, dest_access_hash,
-          status, baseline_message_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)
+          dest_kind, dest_marked_id, dest_raw_id, dest_peer_class,           dest_title, dest_username, dest_access_hash,
+          status, hide_sender, baseline_message_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
       `).run(
         input.source.kind,
         input.source.markedId,
@@ -47,6 +48,7 @@ export class RuleRepository {
         input.destination.title,
         input.destination.username,
         input.destination.accessHash,
+        input.hideSender === false ? 0 : 1,
         input.baselineMessageId,
         now,
         now,
@@ -110,6 +112,13 @@ export class RuleRepository {
       .prepare(`UPDATE rules SET baseline_message_id = ?, updated_at = ? WHERE id = ?`)
       .run(baselineMessageId, Date.now(), id);
     if (asNumber(result.changes, 'rules.changes') !== 1) throw new RuleError('That rule no longer exists.');
+  }
+
+  setHideSender(id: number, hideSender: boolean): Rule {
+    return this.requireChange(
+      id,
+      this.database.prepare(`UPDATE rules SET hide_sender = ?, updated_at = ? WHERE id = ?`).run(hideSender ? 1 : 0, Date.now(), id),
+    );
   }
 
   pauseAll(): number {
@@ -281,6 +290,7 @@ function mapRule(row: unknown): Rule {
     destUsername: textOrNull(record.dest_username),
     destAccessHash: textOrNull(record.dest_access_hash),
     status: status(record.status),
+    hideSender: integer(record.hide_sender, 'hide_sender') === 1,
     baselineMessageId: integer(record.baseline_message_id, 'baseline_message_id'),
     createdAt: integer(record.created_at, 'created_at'),
     updatedAt: integer(record.updated_at, 'updated_at'),

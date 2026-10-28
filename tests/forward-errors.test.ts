@@ -53,6 +53,43 @@ describe('forwarding errors and policy', () => {
     expect(second.skipped).toEqual([{ messageId: 12, reason: 'duplicate' }]);
   });
 
+  it('asks Telegram to hide the original sender when the rule says so', async () => {
+    const { db, rules } = memoryDb();
+    open.push(db);
+    const rule = save(rules);
+    const seen: boolean[] = [];
+    await forwardBatch(
+      {
+        claim: rules.claim.bind(rules),
+        complete: rules.complete.bind(rules),
+        nativeForward: async (_source, _destination, _ids, dropAuthor) => {
+          seen.push(dropAuthor);
+        },
+        sleep: async () => undefined,
+      },
+      rule,
+      [inbound({ messageId: 16, chatId: rule.sourceMarkedId })],
+      '1',
+    );
+    rules.setHideSender(rule.id, false);
+    const shown = rules.get(rule.id);
+    if (!shown) throw new Error('rule missing');
+    await forwardBatch(
+      {
+        claim: rules.claim.bind(rules),
+        complete: rules.complete.bind(rules),
+        nativeForward: async (_source, _destination, _ids, dropAuthor) => {
+          seen.push(dropAuthor);
+        },
+        sleep: async () => undefined,
+      },
+      shown,
+      [inbound({ messageId: 17, chatId: shown.sourceMarkedId })],
+      '1',
+    );
+    expect(seen).toEqual([true, false]);
+  });
+
   it('retries a short flood wait once and refuses a long or ambiguous failure', async () => {
     const { db, rules } = memoryDb();
     open.push(db);
@@ -140,7 +177,7 @@ describe('forwarding errors and policy', () => {
       .map((name) => readFileSync(new URL(`../src/${name}`, import.meta.url), 'utf8'))
       .join('\n');
     expect(source).toContain('forwardMessages');
-    expect(source).not.toMatch(/dropAuthor\s*:/);
+    expect(source).toContain('dropAuthor');
     expect(source).not.toMatch(/copyMessage|sendFile|uploadFile/);
   });
 });
@@ -163,6 +200,7 @@ function sampleRule(): Rule {
     destUsername: null,
     destAccessHash: '2',
     status: 'active',
+    hideSender: true,
     baselineMessageId: 4,
     createdAt: 1,
     updatedAt: 1,
