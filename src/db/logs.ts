@@ -3,6 +3,7 @@ import { AppDatabase, asNumber } from './database.js';
 
 export interface NewForwardLog {
   ruleId: number | null;
+  ownerUserId: string | null;
   sourceChatId: string | null;
   messageId: number | null;
   level: 'info' | 'warn' | 'error';
@@ -16,31 +17,45 @@ export class LogRepository {
   write(entry: NewForwardLog, now = Date.now()): void {
     this.database
       .prepare(
-        `INSERT INTO forward_logs (rule_id, source_chat_id, message_id, level, event, detail, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO forward_logs (rule_id, owner_user_id, source_chat_id, message_id, level, event, detail, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(entry.ruleId, entry.sourceChatId, entry.messageId, entry.level, entry.event, clip(entry.detail), now);
+      .run(
+        entry.ruleId,
+        entry.ownerUserId,
+        entry.sourceChatId,
+        entry.messageId,
+        entry.level,
+        entry.event,
+        clip(entry.detail),
+        now,
+      );
   }
 
-  list(offset: number, limit: number): ForwardLog[] {
+  list(offset: number, limit: number, ownerUserId?: string): ForwardLog[] {
+    const filter = ownerUserId ? 'WHERE owner_user_id = ?' : '';
     return this.database
       .prepare(
-        `SELECT id, rule_id, source_chat_id, message_id, level, event, detail, created_at
-         FROM forward_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
+        `SELECT id, rule_id, owner_user_id, source_chat_id, message_id, level, event, detail, created_at
+         FROM forward_logs ${filter} ORDER BY id DESC LIMIT ? OFFSET ?`,
       )
-      .all(limit, offset)
+      .all(...(ownerUserId ? [ownerUserId, limit, offset] : [limit, offset]))
       .map((row) => mapLog(row));
   }
 
-  count(): number {
-    const row = this.database.prepare(`SELECT COUNT(*) AS count FROM forward_logs`).get();
+  count(ownerUserId?: string): number {
+    const row = ownerUserId
+      ? this.database.prepare(`SELECT COUNT(*) AS count FROM forward_logs WHERE owner_user_id = ?`).get(ownerUserId)
+      : this.database.prepare(`SELECT COUNT(*) AS count FROM forward_logs`).get();
     if (!row || typeof row !== 'object' || !('count' in row)) return 0;
     const count = row.count;
     return typeof count === 'bigint' ? asNumber(count, 'count') : typeof count === 'number' ? count : 0;
   }
 
-  clearAll(): number {
-    const result = this.database.prepare(`DELETE FROM forward_logs`).run();
+  clearAll(ownerUserId?: string): number {
+    const result = ownerUserId
+      ? this.database.prepare(`DELETE FROM forward_logs WHERE owner_user_id = ?`).run(ownerUserId)
+      : this.database.prepare(`DELETE FROM forward_logs`).run();
     return asNumber(result.changes, 'forward_logs.changes');
   }
 }
@@ -53,6 +68,7 @@ function mapLog(row: unknown): ForwardLog {
   return {
     id: numberValue(record.id),
     ruleId: record.rule_id === null ? null : numberValue(record.rule_id),
+    ownerUserId: typeof record.owner_user_id === 'string' ? record.owner_user_id : null,
     sourceChatId: typeof record.source_chat_id === 'string' ? record.source_chat_id : null,
     messageId: record.message_id === null ? null : numberValue(record.message_id),
     level,

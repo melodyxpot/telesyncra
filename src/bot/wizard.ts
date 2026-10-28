@@ -1,5 +1,5 @@
 import { WIZARD_TTL_MS } from '../constants.js';
-import type { ChatKind, ResolvedChat } from '../types.js';
+import type { ChatKind, NotifyMode, ResolvedChat } from '../types.js';
 
 export type CreatePhase =
   | 'source-kind'
@@ -20,6 +20,7 @@ export interface CreateWizard {
   source?: ResolvedChat;
   destination?: ResolvedChat;
   hideSender: boolean;
+  notify: NotifyMode;
   candidates: ResolvedChat[];
   page: number;
   updatedAt: number;
@@ -61,7 +62,7 @@ export class WizardStore {
 }
 
 export function createWizard(now = Date.now()): CreateWizard {
-  return { type: 'create', phase: 'source-kind', hideSender: true, candidates: [], page: 0, updatedAt: now };
+  return { type: 'create', phase: 'source-kind', hideSender: true, notify: 'off', candidates: [], page: 0, updatedAt: now };
 }
 
 export function editWizard(ruleId: number, field: 'source' | 'dest', now = Date.now()): EditWizard {

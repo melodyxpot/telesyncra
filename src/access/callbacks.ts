@@ -1,5 +1,6 @@
 import { CHAT_PAGE_SIZE, MAX_CALLBACK_LENGTH } from '../constants.js';
-import type { ChatKind } from '../types.js';
+import { isNotifyMode } from '../bot/notify-mode.js';
+import type { ChatKind, NotifyMode } from '../types.js';
 
 export type CallbackAction =
   | { type: 'menu' }
@@ -28,6 +29,13 @@ export type CallbackAction =
   | { type: 'delete_confirm'; ruleId: number }
   | { type: 'hide_sender'; hide: boolean }
   | { type: 'hide_sender_rule'; ruleId: number }
+  | { type: 'notify'; mode: NotifyMode }
+  | { type: 'notify_rule'; ruleId: number }
+  | { type: 'sign_in' }
+  | { type: 'invite' }
+  | { type: 'people' }
+  | { type: 'remove_ask'; userId: string }
+  | { type: 'remove_confirm'; userId: string }
   | { type: 'logs'; page: number };
 
 const PAGE = /^(?:0|[1-9]\d{0,2})$/;
@@ -60,6 +68,12 @@ export function parseCallback(data: string | undefined): CallbackAction | null {
       return { type: 'clear_logs_ask' };
     case 'set-clear-yes':
       return { type: 'clear_logs' };
+    case 'signin':
+      return { type: 'sign_in' };
+    case 'inv-new':
+      return { type: 'invite' };
+    case 'people':
+      return { type: 'people' };
     case 'noop':
       return { type: 'noop' };
     default:
@@ -81,6 +95,14 @@ export function parseCallback(data: string | undefined): CallbackAction | null {
   const sender = /^sender:(0|1)$/.exec(data);
   if (sender?.[1]) return { type: 'hide_sender', hide: sender[1] === '1' };
 
+  const notify = /^note:(off|source|dest|both)$/.exec(data);
+  if (notify?.[1] && isNotifyMode(notify[1])) return { type: 'notify', mode: notify[1] };
+
+  const remove = /^rm:([1-9]\d{0,18})$/.exec(data);
+  if (remove?.[1]) return { type: 'remove_ask', userId: remove[1] };
+  const removeYes = /^rm-yes:([1-9]\d{0,18})$/.exec(data);
+  if (removeYes?.[1]) return { type: 'remove_confirm', userId: removeYes[1] };
+
   return (
     pageAction(data, 'page', 'page') ??
     pageAction(data, 'rules', 'rules') ??
@@ -94,6 +116,7 @@ export function parseCallback(data: string | undefined): CallbackAction | null {
     idAction(data, 'del-id', 'delete_ask') ??
     idAction(data, 'del-yes', 'delete_confirm') ??
     idAction(data, 'sender-id', 'hide_sender_rule') ??
+    idAction(data, 'note-id', 'notify_rule') ??
     pageAction(data, 'logs', 'logs')
   );
 }

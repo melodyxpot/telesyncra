@@ -10,7 +10,7 @@ import { readSession, writeSession } from './session.js';
 
 export async function openUserClient(config: AppConfig, logger: Logger): Promise<TelegramClient> {
   const saved = readSession(config.sessionPath);
-  const client = createClient(config, saved);
+  const client = createTelegramClient(config, saved);
   try {
     await authorize(client, saved.length > 0, logger);
   } catch (error) {
@@ -28,7 +28,7 @@ export async function openUserClient(config: AppConfig, logger: Logger): Promise
   return client;
 }
 
-function createClient(config: AppConfig, session: string): TelegramClient {
+export function createTelegramClient(config: Pick<AppConfig, 'apiId' | 'apiHash'>, session: string): TelegramClient {
   return new TelegramClient(new StringSession(session), config.apiId, config.apiHash, {
     connectionRetries: 10,
     reconnectRetries: 100,

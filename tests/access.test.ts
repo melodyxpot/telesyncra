@@ -40,6 +40,11 @@ describe('access control', () => {
     expect(parseCallback('sender:1')).toEqual({ type: 'hide_sender', hide: true });
     expect(parseCallback('sender:0')).toEqual({ type: 'hide_sender', hide: false });
     expect(parseCallback('sender-id:4')).toEqual({ type: 'hide_sender_rule', ruleId: 4 });
+    expect(parseCallback('note:source')).toEqual({ type: 'notify', mode: 'source' });
+    expect(parseCallback('note-id:4')).toEqual({ type: 'notify_rule', ruleId: 4 });
+    expect(parseCallback('signin')).toEqual({ type: 'sign_in' });
+    expect(parseCallback('inv-new')).toEqual({ type: 'invite' });
+    expect(parseCallback('rm-yes:42')).toEqual({ type: 'remove_confirm', userId: '42' });
 
     expect(parseCallback(undefined)).toBeNull();
     expect(parseCallback('')).toBeNull();

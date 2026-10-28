@@ -63,7 +63,7 @@ export class ForwardEngine {
   private async forwardChat(messages: InboundMessage[]): Promise<void> {
     const chatId = messages[0]?.chatId;
     if (!chatId) return;
-    const rules = this.deps.rules.listActiveBySource(chatId);
+    const rules = this.deps.rules.listActiveBySource(this.deps.selfUserId, chatId);
     if (rules.length === 0) return;
     for (const rule of rules) {
       const relevant = messages.filter((message) => message.chatId === rule.sourceMarkedId);
@@ -127,6 +127,7 @@ export class ForwardEngine {
     try {
       this.deps.logs.write({
         ruleId: rule.id,
+        ownerUserId: rule.ownerUserId,
         sourceChatId: rule.sourceMarkedId,
         messageId,
         level,

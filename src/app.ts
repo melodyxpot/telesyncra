@@ -1,22 +1,17 @@
 import path from 'node:path';
 import { Bot, TelegramApiError } from 'node-telegram-bot-api';
-import { NewMessage } from 'telegram/events/NewMessage.js';
 import { registerManager } from './bot/manager.js';
 import { loadConfig } from './config.js';
 import { RECONNECT_INTERVAL_MS } from './constants.js';
+import { AccountStore } from './db/accounts.js';
 import { openDatabase } from './db/database.js';
 import { LogRepository } from './db/logs.js';
 import { RuleRepository } from './db/rules.js';
-import { ForwardEngine } from './engine/engine.js';
 import { createLogger } from './logger.js';
 import { acquireProcessLock, ensurePrivateDir, restrictFile } from './security/files.js';
-import { ChatDirectory } from './telegram/directory.js';
+import { AccountPool } from './telegram/account-pool.js';
 import { telegramErrorCode } from './telegram/error-code.js';
-import { createNativeForwarder } from './telegram/forward.js';
-import { mapIncoming } from './telegram/map-message.js';
-import { chatFromRule } from './telegram/peers.js';
-import { writeSession } from './telegram/session.js';
-import { openUserClient } from './telegram/user-client.js';
+import { readSession, writeSession } from './telegram/session.js';
 
 export async function main(): Promise<void> {
   const config = loadConfig(process.env);
@@ -24,52 +19,34 @@ export async function main(): Promise<void> {
   const dataDir = path.dirname(config.databasePath);
   const releaseLock = acquireProcessLock(path.join(dataDir, 'telesyncra.lock'), logger);
   ensurePrivateDir(dataDir, logger);
-  const database = openDatabase(config.databasePath);
+  const sessionsDir = path.join(dataDir, 'sessions');
+  ensurePrivateDir(sessionsDir, logger);
+  const database = openDatabase(config.databasePath, config.allowedUserId);
   restrictFile(config.databasePath, logger);
   const rules = new RuleRepository(database);
   const logs = new LogRepository(database);
+  const accounts = new AccountStore(database);
+  accounts.ensureAdmin(config.allowedUserId);
+  importLegacySession(config.sessionPath, path.join(sessionsDir, `${config.allowedUserId}.session`), logger);
   const interrupted = rules.settleInterrupted();
   if (interrupted > 0) {
     logger.warn({ event: 'interrupted_claims', count: interrupted }, 'marked interrupted forwards as not retried');
   }
 
-  const client = await openUserClient(config, logger);
-  const selfId = (await client.getMe()).id.toString();
-  const directory = new ChatDirectory(client);
   const bot = new Bot(config.botToken);
-  const engine = new ForwardEngine({
-    rules,
-    logs,
-    selfUserId: selfId,
-    nativeForward: createNativeForwarder(client),
-    logger,
-    notify: async (text) => {
-      await bot.api.sendMessage({ chat_id: config.allowedUserId, text });
-    },
+  const pool = new AccountPool(config, rules, logs, logger, sessionsDir, async (userId, text) => {
+    await bot.api.sendMessage({ chat_id: userId, text });
   });
-
-  client.addEventHandler((event) => {
-    try {
-      const mapped = mapIncoming(event.message);
-      if (mapped) engine.ingest(mapped.inbound, mapped.groupedId);
-    } catch (error) {
-      logger.error(
-        { event: 'update_failed', name: error instanceof Error ? error.name : 'Error' },
-        'could not accept an update',
-      );
-    }
-  }, new NewMessage({ incoming: true }));
-
-  await refreshBaselines(rules, directory, logger);
-  engine.start();
+  await pool.restore(config.allowedUserId);
+  for (const member of accounts.listMembers()) await pool.restore(member.userId);
 
   registerManager(bot, {
     allowedUserId: config.allowedUserId,
+    api: config,
     rules,
     logs,
-    directory,
-    selfId: () => selfId,
-    connected: () => client.connected === true,
+    accounts,
+    pool,
     logger,
   });
 
@@ -113,12 +90,8 @@ export async function main(): Promise<void> {
   });
 
   const reconnectTimer = setInterval(() => {
-    if (stopping || client.connected === true) return;
-    logger.warn({ event: 'reconnecting' }, 'user client disconnected; reconnecting');
-    client.connect().then(
-      () => logger.info({ event: 'reconnected' }, 'user client reconnected'),
-      (error: unknown) => logger.error({ event: 'reconnect_failed', code: telegramErrorCode(error) }, 'reconnect failed'),
-    );
+    if (stopping) return;
+    void pool.reconnectLoose();
   }, RECONNECT_INTERVAL_MS);
 
   shutdown = async (signal: string): Promise<void> => {
@@ -126,18 +99,9 @@ export async function main(): Promise<void> {
     stopping = true;
     logger.info({ event: 'shutdown', signal }, 'shutting down');
     if (reconnectTimer) clearInterval(reconnectTimer);
-    await engine.stop().catch(() => undefined);
     bot.stop();
     await Promise.race([polling.catch(() => undefined), delay(5000)]);
-    await Promise.race([client.disconnect().catch(() => undefined), delay(5000)]);
-    const fresh = client.session.save() as unknown as string;
-    if (typeof fresh === 'string' && fresh.length >= 10) {
-      try {
-        writeSession(config.sessionPath, fresh, logger);
-      } catch {
-        logger.warn({ event: 'session_save_failed' }, 'could not refresh the saved session during shutdown');
-      }
-    }
+    await Promise.race([pool.shutdown(), delay(5000)]);
     database.close();
     releaseLock();
     process.exit(0);
@@ -152,28 +116,16 @@ export async function main(): Promise<void> {
   process.once('SIGINT', () => void shutdown('SIGINT'));
   process.once('SIGTERM', () => void shutdown('SIGTERM'));
   process.stdout.write('Telesyncra is running. Open the management bot and send /start.\n');
-  logger.info({ event: 'running', selfId, activeRules: rules.counts().active }, 'telesyncra is running');
+  logger.info({ event: 'running', activeRules: rules.counts().active }, 'telesyncra is running');
 }
 
-async function refreshBaselines(
-  rules: RuleRepository,
-  directory: ChatDirectory,
-  logger: ReturnType<typeof createLogger>,
-): Promise<void> {
-  for (const rule of rules.list()) {
-    if (rule.status !== 'active') continue;
-    try {
-      const baseline = await directory.latestMessageId(chatFromRule(rule, 'source'));
-      rules.setBaseline(rule.id, baseline);
-      logger.info({ event: 'baseline_refreshed', ruleId: rule.id, baseline }, 'baseline refreshed at startup');
-    } catch (error) {
-      rules.pause(rule.id);
-      logger.error(
-        { event: 'baseline_refresh_failed', ruleId: rule.id, code: telegramErrorCode(error) },
-        'paused a rule because its source chat could not be read',
-      );
-    }
-  }
+function importLegacySession(legacyPath: string, adminPath: string, logger: ReturnType<typeof createLogger>): void {
+  if (path.resolve(legacyPath) === path.resolve(adminPath)) return;
+  if (readSession(adminPath).length >= 10) return;
+  const legacy = readSession(legacyPath);
+  if (legacy.length < 10) return;
+  writeSession(adminPath, legacy, logger);
+  logger.info({ event: 'legacy_session_imported' }, 'copied the existing login for the admin');
 }
 
 function delay(ms: number): Promise<void> {

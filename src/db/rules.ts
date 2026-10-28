@@ -1,6 +1,6 @@
 import { RuleError } from '../errors.js';
 import { assertRulePair } from '../telegram/peers.js';
-import type { ChatKind, PeerClass, ResolvedChat, Rule, RuleStatus } from '../types.js';
+import type { ChatKind, NotifyMode, PeerClass, ResolvedChat, Rule, RuleStatus } from '../types.js';
 import { AppDatabase, asNumber, isUniqueConstraint } from './database.js';
 
 export interface NewRuleInput {
@@ -9,12 +9,13 @@ export interface NewRuleInput {
   selfUserId: string;
   baselineMessageId: number;
   hideSender?: boolean;
+  notify?: NotifyMode;
 }
 
 const SELECT_RULE = `
   id, source_kind, source_marked_id, source_raw_id, source_peer_class, source_title, source_username, source_access_hash,
   dest_kind, dest_marked_id, dest_raw_id, dest_peer_class, dest_title, dest_username, dest_access_hash,
-  status, hide_sender, baseline_message_id, created_at, updated_at
+  status, hide_sender, notify, owner_user_id, baseline_message_id, created_at, updated_at
 `;
 
 export class RuleRepository {
@@ -31,8 +32,8 @@ export class RuleRepository {
         INSERT INTO rules (
           source_kind, source_marked_id, source_raw_id, source_peer_class, source_title, source_username, source_access_hash,
           dest_kind, dest_marked_id, dest_raw_id, dest_peer_class,           dest_title, dest_username, dest_access_hash,
-          status, hide_sender, baseline_message_id, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?)
+          status, hide_sender, notify, owner_user_id, baseline_message_id, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)
       `).run(
         input.source.kind,
         input.source.markedId,
@@ -49,6 +50,8 @@ export class RuleRepository {
         input.destination.username,
         input.destination.accessHash,
         input.hideSender === false ? 0 : 1,
+        input.notify ?? 'off',
+        input.selfUserId,
         input.baselineMessageId,
         now,
         now,
@@ -66,41 +69,58 @@ export class RuleRepository {
     }
   }
 
-  list(): Rule[] {
+  list(ownerUserId?: string): Rule[] {
+    const filter = ownerUserId ? 'WHERE owner_user_id = ?' : '';
     return this.database
-      .prepare(`SELECT ${SELECT_RULE} FROM rules ORDER BY id ASC`)
-      .all()
+      .prepare(`SELECT ${SELECT_RULE} FROM rules ${filter} ORDER BY id ASC`)
+      .all(...(ownerUserId ? [ownerUserId] : []))
       .map((row) => mapRule(row));
   }
 
-  listActiveBySource(sourceMarkedId: string): Rule[] {
+  listActiveBySource(ownerUserId: string, sourceMarkedId: string): Rule[] {
     return this.database
-      .prepare(`SELECT ${SELECT_RULE} FROM rules WHERE status = 'active' AND source_marked_id = ? ORDER BY id ASC`)
-      .all(sourceMarkedId)
+      .prepare(
+        `SELECT ${SELECT_RULE} FROM rules WHERE owner_user_id = ? AND status = 'active' AND source_marked_id = ? ORDER BY id ASC`,
+      )
+      .all(ownerUserId, sourceMarkedId)
       .map((row) => mapRule(row));
   }
 
-  get(id: number): Rule | null {
-    const row = this.database.prepare(`SELECT ${SELECT_RULE} FROM rules WHERE id = ?`).get(id);
+  get(id: number, ownerUserId?: string): Rule | null {
+    const row = ownerUserId
+      ? this.database.prepare(`SELECT ${SELECT_RULE} FROM rules WHERE id = ? AND owner_user_id = ?`).get(id, ownerUserId)
+      : this.database.prepare(`SELECT ${SELECT_RULE} FROM rules WHERE id = ?`).get(id);
     return row ? mapRule(row) : null;
   }
 
-  pause(id: number): Rule {
+  pause(id: number, ownerUserId?: string): Rule {
     return this.requireChange(
       id,
-      this.database.prepare(`UPDATE rules SET status = 'paused', updated_at = ? WHERE id = ?`).run(Date.now(), id),
+      ownerUserId
+        ? this.database
+            .prepare(`UPDATE rules SET status = 'paused', updated_at = ? WHERE id = ? AND owner_user_id = ?`)
+            .run(Date.now(), id, ownerUserId)
+        : this.database.prepare(`UPDATE rules SET status = 'paused', updated_at = ? WHERE id = ?`).run(Date.now(), id),
+      ownerUserId,
     );
   }
 
-  activate(id: number, baselineMessageId: number): Rule {
+  activate(id: number, baselineMessageId: number, ownerUserId?: string): Rule {
     if (!Number.isInteger(baselineMessageId) || baselineMessageId < 0) {
       throw new RuleError('Cannot start the rule without a valid baseline.');
     }
     return this.requireChange(
       id,
-      this.database
-        .prepare(`UPDATE rules SET status = 'active', baseline_message_id = ?, updated_at = ? WHERE id = ?`)
-        .run(baselineMessageId, Date.now(), id),
+      ownerUserId
+        ? this.database
+            .prepare(
+              `UPDATE rules SET status = 'active', baseline_message_id = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`,
+            )
+            .run(baselineMessageId, Date.now(), id, ownerUserId)
+        : this.database
+            .prepare(`UPDATE rules SET status = 'active', baseline_message_id = ?, updated_at = ? WHERE id = ?`)
+            .run(baselineMessageId, Date.now(), id),
+      ownerUserId,
     );
   }
 
@@ -114,17 +134,34 @@ export class RuleRepository {
     if (asNumber(result.changes, 'rules.changes') !== 1) throw new RuleError('That rule no longer exists.');
   }
 
-  setHideSender(id: number, hideSender: boolean): Rule {
+  setHideSender(id: number, hideSender: boolean, ownerUserId?: string): Rule {
     return this.requireChange(
       id,
-      this.database.prepare(`UPDATE rules SET hide_sender = ?, updated_at = ? WHERE id = ?`).run(hideSender ? 1 : 0, Date.now(), id),
+      ownerUserId
+        ? this.database
+            .prepare(`UPDATE rules SET hide_sender = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`)
+            .run(hideSender ? 1 : 0, Date.now(), id, ownerUserId)
+        : this.database.prepare(`UPDATE rules SET hide_sender = ?, updated_at = ? WHERE id = ?`).run(hideSender ? 1 : 0, Date.now(), id),
+      ownerUserId,
     );
   }
 
-  pauseAll(): number {
+  setNotify(id: number, notify: NotifyMode, ownerUserId?: string): Rule {
+    return this.requireChange(
+      id,
+      ownerUserId
+        ? this.database
+            .prepare(`UPDATE rules SET notify = ?, updated_at = ? WHERE id = ? AND owner_user_id = ?`)
+            .run(notify, Date.now(), id, ownerUserId)
+        : this.database.prepare(`UPDATE rules SET notify = ?, updated_at = ? WHERE id = ?`).run(notify, Date.now(), id),
+      ownerUserId,
+    );
+  }
+
+  pauseAll(ownerUserId: string): number {
     const result = this.database
-      .prepare(`UPDATE rules SET status = 'paused', updated_at = ? WHERE status = 'active'`)
-      .run(Date.now());
+      .prepare(`UPDATE rules SET status = 'paused', updated_at = ? WHERE status = 'active' AND owner_user_id = ?`)
+      .run(Date.now(), ownerUserId);
     return asNumber(result.changes, 'rules.changes');
   }
 
@@ -149,12 +186,12 @@ export class RuleRepository {
             source_kind = ?, source_marked_id = ?, source_raw_id = ?, source_peer_class = ?,
             source_title = ?, source_username = ?, source_access_hash = ?,
             baseline_message_id = ?, updated_at = ?
-           WHERE id = ?`
+           WHERE id = ? AND owner_user_id = ?`
         : `UPDATE rules SET
             dest_kind = ?, dest_marked_id = ?, dest_raw_id = ?, dest_peer_class = ?,
             dest_title = ?, dest_username = ?, dest_access_hash = ?,
             baseline_message_id = ?, updated_at = ?
-           WHERE id = ?`;
+           WHERE id = ? AND owner_user_id = ?`;
     try {
       const result = this.database
         .prepare(sql)
@@ -169,6 +206,7 @@ export class RuleRepository {
           baselineMessageId,
           Date.now(),
           id,
+          selfUserId,
         );
       if (asNumber(result.changes, 'rules.changes') !== 1) throw new RuleError('That rule no longer exists.');
     } catch (error) {
@@ -176,16 +214,22 @@ export class RuleRepository {
       if (isUniqueConstraint(error)) throw new RuleError('A rule for that source and destination already exists.');
       throw error;
     }
-    return this.require(id);
+    return this.require(id, selfUserId);
   }
 
-  delete(id: number): boolean {
-    const result = this.database.prepare(`DELETE FROM rules WHERE id = ?`).run(id);
+  delete(id: number, ownerUserId?: string): boolean {
+    const result = ownerUserId
+      ? this.database.prepare(`DELETE FROM rules WHERE id = ? AND owner_user_id = ?`).run(id, ownerUserId)
+      : this.database.prepare(`DELETE FROM rules WHERE id = ?`).run(id);
     return asNumber(result.changes, 'rules.changes') === 1;
   }
 
-  counts(): { active: number; paused: number } {
-    const rows = this.database.prepare(`SELECT status, COUNT(*) AS count FROM rules GROUP BY status`).all();
+  counts(ownerUserId?: string): { active: number; paused: number } {
+    const rows = ownerUserId
+      ? this.database
+          .prepare(`SELECT status, COUNT(*) AS count FROM rules WHERE owner_user_id = ? GROUP BY status`)
+          .all(ownerUserId)
+      : this.database.prepare(`SELECT status, COUNT(*) AS count FROM rules GROUP BY status`).all();
     const counts = { active: 0, paused: 0 };
     for (const row of rows) {
       const record = asRecord(row);
@@ -234,13 +278,13 @@ export class RuleRepository {
     return asNumber(result.changes, 'processed_messages.changes');
   }
 
-  private requireChange(id: number, result: { changes: number | bigint }): Rule {
+  private requireChange(id: number, result: { changes: number | bigint }, ownerUserId?: string): Rule {
     if (asNumber(result.changes, 'rules.changes') !== 1) throw new RuleError('That rule no longer exists.');
-    return this.require(id);
+    return this.require(id, ownerUserId);
   }
 
-  private require(id: number): Rule {
-    const rule = this.get(id);
+  private require(id: number, ownerUserId?: string): Rule {
+    const rule = this.get(id, ownerUserId);
     if (!rule) throw new RuleError('That rule no longer exists.');
     return rule;
   }
@@ -291,6 +335,8 @@ function mapRule(row: unknown): Rule {
     destAccessHash: textOrNull(record.dest_access_hash),
     status: status(record.status),
     hideSender: integer(record.hide_sender, 'hide_sender') === 1,
+    notify: notifyMode(record.notify),
+    ownerUserId: text(record.owner_user_id),
     baselineMessageId: integer(record.baseline_message_id, 'baseline_message_id'),
     createdAt: integer(record.created_at, 'created_at'),
     updatedAt: integer(record.updated_at, 'updated_at'),
@@ -331,4 +377,9 @@ function peerClass(value: unknown): PeerClass {
 function status(value: unknown): RuleStatus {
   if (value === 'active' || value === 'paused') return value;
   throw new Error('Invalid rule status');
+}
+
+function notifyMode(value: unknown): NotifyMode {
+  if (value === 'off' || value === 'source' || value === 'dest' || value === 'both') return value;
+  throw new Error('Invalid notify mode');
 }
