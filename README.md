@@ -2,7 +2,7 @@
 
 Telesyncra forwards **new** Telegram messages from chats your own account can already access. A separate bot gives you a private button menu for the rules. The bot does not read your private conversations.
 
-Forwarding is done with your user account through [GramJS](https://github.com/gram-js/gramjs) (`telegram` on npm) and Telegram's native forward. Original sender attribution stays intact when Telegram allows the forward. Protected content is skipped. Telesyncra does not download and re-upload those messages, and it does not try to get around Telegram's restrictions.
+Forwarding is done with your user account through [GramJS](https://github.com/gram-js/gramjs) (`telegram` on npm) and Telegram's native forward. By default the original sender name is hidden, using Telegram's own hide-sender flag. The recipient sees the message as sent by your account. You can show the sender name again on that rule. Protected content is skipped. Telesyncra does not download and re-upload those messages, and it does not try to get around Telegram's restrictions.
 
 ## What each part can do
 
@@ -101,15 +101,19 @@ A later start reuses `data/telesyncra.session` and does not ask again. When the 
 
 ## Using the menu
 
-- **Create forwarding rule** — choose Private user, Group, or Channel for the source, pick a recent chat or enter a `@username` / numeric id, then do the same for the destination. Confirm before the rule is saved.
-- **View all rules** — status, source, and destination. No message text.
-- **Start / stop a rule** — stopping pauses forwarding. Starting again sets a new baseline, so messages from the pause are not sent later.
-- **Edit rule** — change the source or the destination. The baseline is refreshed.
-- **Delete rule** — removes the rule only. Messages already delivered stay in Telegram.
-- **View forwarding logs** — successes and error codes.
+Open the bot and send `/start`. The menu is one message. Tapping a button rewrites that message, the same way BotFather walks through a step. Blue is the main action, green confirms or starts a rule, and red deletes.
+
+The button beside the message field opens the command list: `/start`, `/menu`, `/status`, `/cancel`, and `/help`.
+
+- **Create a rule** — choose Private user, Group, or Channel for the source, pick a recent chat or enter a `@username` / numeric id, then do the same for the destination. On the review step, the original sender is hidden. Tap **Show original sender** if the recipient should see who wrote it. Confirm before the rule is saved.
+- **My rules** — status, source, destination, and whether the sender is hidden. No message text.
+- **Start or pause** — pausing stops forwarding. Starting again sets a new baseline, so messages from the pause are not sent later.
+- **Edit a rule** — change the source, the destination, or whether the original sender name is hidden. Changing a chat refreshes the baseline.
+- **Delete a rule** — removes the rule only. Messages already delivered stay in Telegram.
+- **Logs** — successes and error codes.
 - **Settings** — connection status, pause all, resume all, clear logs.
 
-`/menu`, `/status`, `/cancel`, and `/help` are also available. A wizard step expires after 15 minutes.
+When a step needs a username or id, a short message opens Telegram's reply bar. Send the value there. Invite links (`t.me/+...`) are rejected. `/cancel` or Cancel leaves the step. A wizard step expires after 15 minutes.
 
 Numeric ids use Telegram's bot-style form: a user id is positive, a basic group is negative, and a channel or supergroup looks like `-100...`. If you type the raw positive channel id while the selected type is Group or Channel, Telesyncra also tries the `-100` form. Invite links (`t.me/+...`) are rejected. Join the chat with your account first, then pick it or send its id.
 

@@ -13,7 +13,7 @@ export interface EngineDeps {
   rules: RuleRepository;
   logs: LogRepository;
   selfUserId: string;
-  nativeForward(source: StoredPeer, destination: StoredPeer, messageIds: number[]): Promise<void>;
+  nativeForward(source: StoredPeer, destination: StoredPeer, messageIds: number[], dropAuthor: boolean): Promise<void>;
   sleep?: (ms: number) => Promise<void>;
   notify?: (text: string) => Promise<void>;
   logger: Logger;

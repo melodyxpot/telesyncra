@@ -39,6 +39,7 @@ export interface Rule {
   destUsername: string | null;
   destAccessHash: string | null;
   status: RuleStatus;
+  hideSender: boolean;
   baselineMessageId: number;
   createdAt: number;
   updatedAt: number;

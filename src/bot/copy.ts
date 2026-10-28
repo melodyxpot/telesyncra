@@ -26,27 +26,34 @@ export function formatRule(rule: Rule): string {
     `#${rule.id} ${rule.status}`,
     `From ${formatChat({ kind: rule.sourceKind, title: rule.sourceTitle, username: rule.sourceUsername, markedId: rule.sourceMarkedId })}`,
     `To ${formatChat({ kind: rule.destKind, title: rule.destTitle, username: rule.destUsername, markedId: rule.destMarkedId })}`,
+    rule.hideSender ? 'Sender hidden' : 'Sender shown',
   ].join('\n');
 }
 
-export function ruleSummary(source: ResolvedChat, destination: ResolvedChat): string {
+export function senderNote(hideSender: boolean): string {
+  return hideSender
+    ? 'Original sender is hidden. The recipient sees the message as sent by your account. Words inside the message stay as written.'
+    : 'Original sender name stays on the forwarded message.';
+}
+
+export function ruleSummary(source: ResolvedChat, destination: ResolvedChat, hideSender = true): string {
   return [
-    'Review this forwarding rule',
-    '',
     `From ${formatChat(source)}`,
     `To ${formatChat(destination)}`,
     '',
     'Only messages that arrive after you confirm are forwarded.',
     'Messages sent by your account are skipped.',
     'Protected content is skipped. Telesyncra will not copy it or bypass Telegram.',
+    senderNote(hideSender),
     '',
     'Confirm to save and activate the rule.',
   ].join('\n');
 }
 
 export function kindPrompt(side: 'source' | 'destination'): string {
+  const direction = side === 'source' ? 'messages come from' : 'messages are delivered to';
   return [
-    `Choose the ${side} type.`,
+    `Which kind of chat should ${direction}?`,
     '',
     'Private user: a one-to-one chat.',
     'Group: a basic group or supergroup.',
@@ -65,6 +72,7 @@ export function helpText(): string {
     'Your own messages are skipped. Old messages are not copied.',
     'Protected chats and messages that Telegram refuses to forward are skipped.',
     '',
+    'Tap a button in the message. The reply bar opens when a step needs a username or id.',
     'Commands: /menu /status /cancel /help',
   ].join('\n');
 }

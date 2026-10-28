@@ -1,102 +1,116 @@
-import { InlineKeyboardBuilder, type InlineKeyboardMarkup } from 'node-telegram-bot-api';
 import type { ResolvedChat, Rule } from '../types.js';
 import { oneLine } from './copy.js';
+import { button, type DialogButton } from './dialog.js';
 import type { Page } from './paging.js';
 
-export function mainMenuKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder()
-    .text('Create forwarding rule', 'new')
-    .row()
-    .text('View all rules', 'rules:0')
-    .row()
-    .text('Start / stop a rule', 'toggle:0')
-    .row()
-    .text('Edit rule', 'edit:0')
-    .row()
-    .text('Delete rule', 'del:0')
-    .row()
-    .text('View forwarding logs', 'logs:0')
-    .row()
-    .text('Settings', 'set')
-    .build();
+export function mainMenuRows(): DialogButton[][] {
+  return [
+    [button('Create a rule', 'new', 'primary')],
+    [button('My rules', 'rules:0')],
+    [button('Start or pause', 'toggle:0')],
+    [button('Edit a rule', 'edit:0')],
+    [button('Delete a rule', 'del:0')],
+    [button('Logs', 'logs:0')],
+    [button('Settings', 'set')],
+  ];
 }
 
-export function kindKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder()
-    .text('Private user', 'kind:user')
-    .row()
-    .text('Group', 'kind:group')
-    .row()
-    .text('Channel', 'kind:channel')
-    .row()
-    .text('Back', 'back')
-    .text('Cancel', 'cancel')
-    .build();
+export function kindRows(): DialogButton[][] {
+  return [
+    [button('Private user', 'kind:user')],
+    [button('Group', 'kind:group')],
+    [button('Channel', 'kind:channel')],
+    [button('Back', 'back'), button('Cancel', 'cancel')],
+  ];
 }
 
-export function chatPickerKeyboard(slice: Page<ResolvedChat>): InlineKeyboardMarkup {
-  const builder = new InlineKeyboardBuilder();
-  slice.items.forEach((chat, index) => {
-    builder.text(oneLine(chat.title, 40), `pick:${index}`).row();
-  });
-  if (slice.page > 0) builder.text('Previous', `page:${slice.page - 1}`);
-  if (slice.page + 1 < slice.pages) builder.text('Next', `page:${slice.page + 1}`);
-  if (slice.pages > 1) builder.row();
-  builder.text('Enter username or id', 'manual').row();
-  builder.text('Back', 'back').text('Cancel', 'cancel');
-  return builder.build();
+export function chatPickerRows(slice: Page<ResolvedChat>): DialogButton[][] {
+  const rows: DialogButton[][] = slice.items.map((chat, index) => [button(oneLine(chat.title, 40), `pick:${index}`)]);
+  const pager = pageRow(slice.page, slice.pages, 'page');
+  if (pager.length > 0) rows.push(pager);
+  rows.push([button('Enter username or id', 'manual')]);
+  rows.push([button('Back', 'back'), button('Cancel', 'cancel')]);
+  return rows;
 }
 
-export function confirmKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder().text('Confirm and activate', 'ok').row().text('Back', 'back').text('Cancel', 'cancel').build();
+export function confirmRows(hideSender?: boolean): DialogButton[][] {
+  const rows: DialogButton[][] = [];
+  if (hideSender !== undefined) {
+    rows.push([
+      button(hideSender ? 'Show original sender' : 'Hide original sender', hideSender ? 'sender:0' : 'sender:1'),
+    ]);
+  }
+  rows.push([button('Confirm and activate', 'ok', 'success')], [button('Back', 'back'), button('Cancel', 'cancel')]);
+  return rows;
 }
 
-export function manualKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder().text('Back', 'back').text('Cancel', 'cancel').build();
+export function manualRows(): DialogButton[][] {
+  return [[button('Back', 'back'), button('Cancel', 'cancel')]];
 }
 
-export function rulesKeyboard(slice: Page<Rule>, mode: 'view' | 'toggle' | 'edit' | 'delete'): InlineKeyboardMarkup {
-  const builder = new InlineKeyboardBuilder();
+export function rulesRows(slice: Page<Rule>, mode: 'view' | 'toggle' | 'edit' | 'delete'): DialogButton[][] {
+  const rows: DialogButton[][] = [];
   const prefix = mode === 'view' ? 'rules' : mode === 'toggle' ? 'toggle' : mode === 'edit' ? 'edit' : 'del';
-  const idPrefix = mode === 'toggle' ? 'toggle-id' : mode === 'edit' ? 'edit-id' : mode === 'delete' ? 'del-id' : '';
   if (mode !== 'view') {
     for (const rule of slice.items) {
-      const verb = mode === 'toggle' ? (rule.status === 'active' ? 'Pause' : 'Start') : mode === 'edit' ? 'Edit' : 'Delete';
-      builder.text(`${verb} #${rule.id} ${oneLine(rule.sourceTitle, 18)}`, `${idPrefix}:${rule.id}`).row();
+      if (mode === 'toggle') {
+        const starting = rule.status !== 'active';
+        rows.push([
+          button(
+            `${starting ? 'Start' : 'Pause'} #${rule.id} ${oneLine(rule.sourceTitle, 18)}`,
+            `toggle-id:${rule.id}`,
+            starting ? 'success' : undefined,
+          ),
+        ]);
+      } else if (mode === 'edit') {
+        rows.push([button(`Edit #${rule.id} ${oneLine(rule.sourceTitle, 18)}`, `edit-id:${rule.id}`)]);
+      } else {
+        rows.push([button(`Delete #${rule.id} ${oneLine(rule.sourceTitle, 18)}`, `del-id:${rule.id}`, 'danger')]);
+      }
     }
   }
-  if (slice.page > 0) builder.text('Previous', `${prefix}:${slice.page - 1}`);
-  if (slice.page + 1 < slice.pages) builder.text('Next', `${prefix}:${slice.page + 1}`);
-  if (slice.pages > 1) builder.row();
-  builder.text('Menu', 'menu');
-  return builder.build();
+  const pager = pageRow(slice.page, slice.pages, prefix);
+  if (pager.length > 0) rows.push(pager);
+  rows.push([button('Menu', 'menu')]);
+  return rows;
 }
 
-export function editFieldKeyboard(ruleId: number): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder()
-    .text('Change source', `edit-src:${ruleId}`)
-    .row()
-    .text('Change destination', `edit-dst:${ruleId}`)
-    .row()
-    .text('Menu', 'menu')
-    .build();
+export function editFieldRows(ruleId: number, hideSender: boolean): DialogButton[][] {
+  return [
+    [button('Change source', `edit-src:${ruleId}`)],
+    [button('Change destination', `edit-dst:${ruleId}`)],
+    [button(hideSender ? 'Show original sender' : 'Hide original sender', `sender-id:${ruleId}`)],
+    [button('Menu', 'menu')],
+  ];
 }
 
-export function deleteConfirmKeyboard(ruleId: number): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder().text('Delete rule', `del-yes:${ruleId}`).row().text('Menu', 'menu').build();
+export function deleteConfirmRows(ruleId: number): DialogButton[][] {
+  return [[button('Delete rule', `del-yes:${ruleId}`, 'danger')], [button('Menu', 'menu')]];
 }
 
-export function settingsKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder()
-    .text('Pause all', 'set-pause')
-    .text('Resume all', 'set-resume')
-    .row()
-    .text('Clear logs', 'set-clear')
-    .row()
-    .text('Menu', 'menu')
-    .build();
+export function settingsRows(): DialogButton[][] {
+  return [
+    [button('Pause all', 'set-pause'), button('Resume all', 'set-resume', 'success')],
+    [button('Clear logs', 'set-clear', 'danger')],
+    [button('Menu', 'menu')],
+  ];
 }
 
-export function clearLogsKeyboard(): InlineKeyboardMarkup {
-  return new InlineKeyboardBuilder().text('Clear all logs', 'set-clear-yes').row().text('Back', 'set').build();
+export function clearLogsRows(): DialogButton[][] {
+  return [[button('Clear all logs', 'set-clear-yes', 'danger')], [button('Back', 'set')]];
+}
+
+export function logsRows(page: number, pages: number): DialogButton[][] {
+  const rows: DialogButton[][] = [];
+  const pager = pageRow(page, pages, 'logs');
+  if (pager.length > 0) rows.push(pager);
+  rows.push([button('Menu', 'menu')]);
+  return rows;
+}
+
+function pageRow(page: number, pages: number, prefix: string): DialogButton[] {
+  const row: DialogButton[] = [];
+  if (page > 0) row.push(button('Previous', `${prefix}:${page - 1}`));
+  if (page + 1 < pages) row.push(button('Next', `${prefix}:${page + 1}`));
+  return row;
 }

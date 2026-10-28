@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS rules (
   dest_username TEXT,
   dest_access_hash TEXT,
   status TEXT NOT NULL CHECK (status IN ('active', 'paused')) DEFAULT 'active',
+  hide_sender INTEGER NOT NULL DEFAULT 1 CHECK (hide_sender IN (0, 1)),
   baseline_message_id INTEGER NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -62,6 +63,20 @@ export class AppDatabase {
     this.db.exec('PRAGMA busy_timeout = 5000;');
     if (filename !== ':memory:') this.db.exec('PRAGMA journal_mode = WAL;');
     this.db.exec(SCHEMA);
+    this.ensureHideSender();
+  }
+
+  /** Older databases were created before sender hiding existed. New forwards hide the sender. */
+  private ensureHideSender(): void {
+    const columns = this.db.prepare('PRAGMA table_info(rules)').all();
+    const present = columns.some((row) => {
+      if (!row || typeof row !== 'object' || !('name' in row)) return false;
+      return row.name === 'hide_sender';
+    });
+    if (present) return;
+    this.db.exec(
+      'ALTER TABLE rules ADD COLUMN hide_sender INTEGER NOT NULL DEFAULT 1 CHECK (hide_sender IN (0, 1))',
+    );
   }
 
   prepare(sql: string): StatementSync {

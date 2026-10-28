@@ -1,5 +1,11 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, describe, expect, it } from 'vitest';
 import { RuleError } from '../src/errors.js';
+import { openDatabase } from '../src/db/database.js';
+import { RuleRepository } from '../src/db/rules.js';
 import { assertRulePair, markedIdFor } from '../src/telegram/peers.js';
 import { KINDS, makeChat, memoryDb } from './fixtures.js';
 
@@ -24,6 +30,7 @@ describe('rule creation', () => {
         expect(rule.sourceKind).toBe(sourceKind);
         expect(rule.destKind).toBe(destKind);
         expect(rule.baselineMessageId).toBe(20 + n);
+        expect(rule.hideSender).toBe(true);
         n += 1;
       }
     }
@@ -83,6 +90,8 @@ describe('rule creation', () => {
     expect(edited.destMarkedId).toBe('-10033');
     expect(edited.baselineMessageId).toBe(50);
     expect(edited.sourceMarkedId).toBe('11');
+    expect(rules.setHideSender(rule.id, false).hideSender).toBe(false);
+    expect(rules.setHideSender(rule.id, true).hideSender).toBe(true);
 
     rules.claim(rule.id, '11', 51);
     expect(rules.delete(rule.id)).toBe(true);
@@ -95,5 +104,48 @@ describe('rule creation', () => {
     expect(markedIdFor('user', '42')).toBe('42');
     expect(markedIdFor('chat', '42')).toBe('-42');
     expect(markedIdFor('channel', '42')).toBe('-10042');
+  });
+
+  it('hides the sender on rules saved before that column existed', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'telesyncra-'));
+    const file = path.join(dir, 'old.db');
+    const raw = new DatabaseSync(file);
+    raw.exec(`
+      CREATE TABLE rules (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        source_kind TEXT NOT NULL,
+        source_marked_id TEXT NOT NULL,
+        source_raw_id TEXT NOT NULL,
+        source_peer_class TEXT NOT NULL,
+        source_title TEXT NOT NULL,
+        source_username TEXT,
+        source_access_hash TEXT,
+        dest_kind TEXT NOT NULL,
+        dest_marked_id TEXT NOT NULL,
+        dest_raw_id TEXT NOT NULL,
+        dest_peer_class TEXT NOT NULL,
+        dest_title TEXT NOT NULL,
+        dest_username TEXT,
+        dest_access_hash TEXT,
+        status TEXT NOT NULL,
+        baseline_message_id INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      )
+    `);
+    raw.prepare(`
+      INSERT INTO rules (
+        source_kind, source_marked_id, source_raw_id, source_peer_class, source_title, source_username, source_access_hash,
+        dest_kind, dest_marked_id, dest_raw_id, dest_peer_class, dest_title, dest_username, dest_access_hash,
+        status, baseline_message_id, created_at, updated_at
+      ) VALUES ('user', '11', '11', 'user', 'Ada', NULL, '1', 'user', '22', '22', 'user', 'Bea', NULL, '2', 'active', 4, 1, 1)
+    `).run();
+    raw.close();
+
+    const db = openDatabase(file);
+    const rule = new RuleRepository(db).list()[0];
+    expect(rule?.hideSender).toBe(true);
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
   });
 });

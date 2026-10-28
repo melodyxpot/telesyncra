@@ -76,14 +76,21 @@ export async function main(): Promise<void> {
   await bot.api
     .setMyCommands({
       commands: [
-        { command: 'menu', description: 'Open the forwarding menu' },
-        { command: 'status', description: 'Show connection and rule counts' },
-        { command: 'cancel', description: 'Cancel the current step' },
-        { command: 'help', description: 'How Telesyncra works' },
+        { command: 'start', description: 'Open the menu' },
+        { command: 'menu', description: 'Open the menu again' },
+        { command: 'status', description: 'Connection and rule counts' },
+        { command: 'cancel', description: 'Close the current step' },
+        { command: 'help', description: 'How forwarding works' },
       ],
     })
     .catch((error: unknown) => {
       logger.warn({ event: 'commands_failed', code: telegramErrorCode(error) }, 'could not publish bot commands');
+    });
+
+  await bot.api
+    .setChatMenuButton({ menu_button: { type: 'commands' } })
+    .catch((error: unknown) => {
+      logger.warn({ event: 'menu_button_failed', code: telegramErrorCode(error) }, 'could not set the command menu button');
     });
 
   let stopping = false;

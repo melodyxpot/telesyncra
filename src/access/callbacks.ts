@@ -26,6 +26,8 @@ export type CallbackAction =
   | { type: 'delete_page'; page: number }
   | { type: 'delete_ask'; ruleId: number }
   | { type: 'delete_confirm'; ruleId: number }
+  | { type: 'hide_sender'; hide: boolean }
+  | { type: 'hide_sender_rule'; ruleId: number }
   | { type: 'logs'; page: number };
 
 const PAGE = /^(?:0|[1-9]\d{0,2})$/;
@@ -76,6 +78,9 @@ export function parseCallback(data: string | undefined): CallbackAction | null {
     return null;
   }
 
+  const sender = /^sender:(0|1)$/.exec(data);
+  if (sender?.[1]) return { type: 'hide_sender', hide: sender[1] === '1' };
+
   return (
     pageAction(data, 'page', 'page') ??
     pageAction(data, 'rules', 'rules') ??
@@ -88,6 +93,7 @@ export function parseCallback(data: string | undefined): CallbackAction | null {
     pageAction(data, 'del', 'delete_page') ??
     idAction(data, 'del-id', 'delete_ask') ??
     idAction(data, 'del-yes', 'delete_confirm') ??
+    idAction(data, 'sender-id', 'hide_sender_rule') ??
     pageAction(data, 'logs', 'logs')
   );
 }

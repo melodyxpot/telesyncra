@@ -7,7 +7,7 @@ import { evaluateInbound } from './policy.js';
 export interface ForwardDeps {
   claim: RuleRepository['claim'];
   complete: RuleRepository['complete'];
-  nativeForward(source: StoredPeer, destination: StoredPeer, messageIds: number[]): Promise<void>;
+  nativeForward(source: StoredPeer, destination: StoredPeer, messageIds: number[], dropAuthor: boolean): Promise<void>;
   sleep(ms: number): Promise<void>;
 }
 
@@ -41,7 +41,7 @@ export async function forwardBatch(deps: ForwardDeps, rule: Rule, messages: Inbo
   while (true) {
     attemptsMade += 1;
     try {
-      await deps.nativeForward(source, destination, toSend);
+      await deps.nativeForward(source, destination, toSend, rule.hideSender);
       for (const messageId of toSend) {
         deps.complete(rule.id, rule.sourceMarkedId, messageId, 'forwarded', null);
         outcome.forwarded.push(messageId);
