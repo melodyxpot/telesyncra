@@ -117,7 +117,7 @@ When a step needs a username or id, a short message opens Telegram's reply bar. 
 
 Numeric ids use Telegram's bot-style form: a user id is positive, a basic group is negative, and a channel or supergroup looks like `-100...`. If you type the raw positive channel id while the selected type is Group or Channel, Telesyncra also tries the `-100` form. Invite links (`t.me/+...`) are rejected. Join the chat with your account first, then pick it or send its id.
 
-The chat list is the most recent dialogs, including archived ones when Telegram returns them. Older chats can still be entered by username or id.
+The chat list is the most recent dialogs, including archived ones when Telegram returns them. Private users also include people saved in your contacts. Older chats can still be entered by username or id.
 
 ## What gets forwarded
 

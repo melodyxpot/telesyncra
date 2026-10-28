@@ -1,4 +1,5 @@
-import { TelegramClient } from 'telegram';
+import bigInt from 'big-integer';
+import { Api, TelegramClient } from 'telegram';
 import { DIALOG_CACHE_MS, DIALOG_LIMIT } from '../constants.js';
 import { ChatResolveError } from '../errors.js';
 import type { ChatKind, ResolvedChat } from '../types.js';
@@ -59,9 +60,11 @@ export class ChatDirectory {
     if (this.cache && now - this.cache.at < DIALOG_CACHE_MS) return this.cache.chats;
     let dialogs;
     try {
+      // Do not pass ignoreMigrated. In GramJS 2.26 that flag keeps only chats
+      // that already have migratedTo, which drops every private chat and channel.
       dialogs = [
-        ...(await this.client.getDialogs({ limit: DIALOG_LIMIT, ignoreMigrated: true })),
-        ...(await this.client.getDialogs({ limit: 100, folder: 1, ignoreMigrated: true }).catch(() => [])),
+        ...(await this.client.getDialogs({ limit: DIALOG_LIMIT })),
+        ...(await this.client.getDialogs({ limit: 100, folder: 1 }).catch(() => [])),
       ];
     } catch (error) {
       if (error instanceof ChatResolveError) throw error;
@@ -71,15 +74,24 @@ export class ChatDirectory {
     }
     const chats: ResolvedChat[] = [];
     const seen = new Set<string>();
-    for (const dialog of dialogs) {
-      const chat = fromEntity(dialog.entity);
-      if (!chat || seen.has(chat.markedId)) continue;
-      if (chat.peerClass !== 'chat' && !chat.accessHash) continue;
+    const add = (entity: unknown): void => {
+      if (isRetiredBasicGroup(entity)) return;
+      const chat = fromEntity(entity);
+      if (!chat || seen.has(chat.markedId)) return;
+      if (chat.peerClass !== 'chat' && !chat.accessHash) return;
       seen.add(chat.markedId);
       chats.push(chat);
-    }
+    };
+    for (const dialog of dialogs) add(dialog.entity);
+    for (const contact of await this.contacts().catch(() => [])) add(contact);
     this.cache = { at: now, chats };
     return chats;
+  }
+
+  private async contacts(): Promise<Api.TypeUser[]> {
+    const result = await this.client.invoke(new Api.contacts.GetContacts({ hash: bigInt(0) }));
+    if (!(result instanceof Api.contacts.Contacts)) return [];
+    return result.users;
   }
 
   private async entityToChat(entityLike: string): Promise<ResolvedChat> {
@@ -103,6 +115,12 @@ export class ChatDirectory {
     }
     return chat;
   }
+}
+
+/** A basic group that Telegram already replaced with a supergroup. The new chat is listed separately. */
+export function isRetiredBasicGroup(entity: unknown): boolean {
+  if (!entity || typeof entity !== 'object' || !('migratedTo' in entity)) return false;
+  return (entity as { migratedTo?: unknown }).migratedTo != null;
 }
 
 function publicError(code: string): ChatResolveError {

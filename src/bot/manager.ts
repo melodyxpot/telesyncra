@@ -403,10 +403,13 @@ class Manager {
     const slice = pageSlice(wizard.candidates, wizard.page, CHAT_PAGE_SIZE);
     wizard.page = slice.page;
     const side = candidateSide(wizard);
+    const kind = candidateKind(wizard);
     const lines = [
       `Choose the ${side}.`,
       slice.items.length === 0
-        ? 'No matching recent chats were found. You can enter a @username or numeric id.'
+        ? kind === 'user'
+          ? 'No private chats or contacts were found. You can enter a @username or numeric id.'
+          : 'No matching recent chats were found. You can enter a @username or numeric id.'
         : `Page ${slice.page + 1} of ${slice.pages}.`,
     ];
     await this.show(ctx, { title: side === 'destination' ? 'Destination' : 'Source', lines, rows: chatPickerRows(slice) });
@@ -663,4 +666,10 @@ function manualKind(wizard: Wizard): ChatKind | undefined {
 function candidateSide(wizard: Wizard): string {
   if (wizard.type === 'edit') return wizard.field === 'source' ? 'source' : 'destination';
   return wizard.phase.startsWith('dest') ? 'destination' : 'source';
+}
+
+function candidateKind(wizard: Wizard): ChatKind | undefined {
+  if (wizard.type === 'edit') return wizard.kind;
+  if (wizard.phase.startsWith('dest')) return wizard.destKind;
+  return wizard.sourceKind;
 }
