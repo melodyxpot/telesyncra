@@ -101,7 +101,7 @@ A later start reuses `data/telesyncra.session` and does not ask again. When the 
 
 ## Using the menu
 
-Open the bot and send `/start`. The menu is one message. Tapping a button rewrites that message, the same way BotFather walks through a step. Blue is the main action, green confirms or starts a rule, and red deletes.
+Open the bot and send `/start`. The menu is one message. Headings, **bold**, *italic*, and lists format the text. The buttons sit under the message and span its width, so each one is a full tap target. Tapping a button rewrites that message. Blue is the main action, green confirms or starts a rule, and red deletes.
 
 The button beside the message field opens the command list: `/start`, `/menu`, `/status`, `/cancel`, and `/help`.
 

@@ -7,9 +7,9 @@ export function mainMenuRows(): DialogButton[][] {
   return [
     [button('Create a rule', 'new', 'primary')],
     [button('My rules', 'rules:0')],
-    [button('Start or pause', 'toggle:0')],
+    [button('Start or pause', 'toggle:0', 'success')],
     [button('Edit a rule', 'edit:0')],
-    [button('Delete a rule', 'del:0')],
+    [button('Delete a rule', 'del:0', 'danger')],
     [button('Logs', 'logs:0')],
     [button('Settings', 'set')],
   ];
@@ -17,10 +17,10 @@ export function mainMenuRows(): DialogButton[][] {
 
 export function kindRows(): DialogButton[][] {
   return [
-    [button('Private user', 'kind:user')],
-    [button('Group', 'kind:group')],
-    [button('Channel', 'kind:channel')],
-    [button('Back', 'back'), button('Cancel', 'cancel')],
+    [button('Private user', 'kind:user', 'primary')],
+    [button('Group', 'kind:group', 'primary')],
+    [button('Channel', 'kind:channel', 'primary')],
+    ...navRows(),
   ];
 }
 
@@ -28,8 +28,8 @@ export function chatPickerRows(slice: Page<ResolvedChat>): DialogButton[][] {
   const rows: DialogButton[][] = slice.items.map((chat, index) => [button(oneLine(chat.title, 40), `pick:${index}`)]);
   const pager = pageRow(slice.page, slice.pages, 'page');
   if (pager.length > 0) rows.push(pager);
-  rows.push([button('Enter username or id', 'manual')]);
-  rows.push([button('Back', 'back'), button('Cancel', 'cancel')]);
+  rows.push([button('Enter username or id', 'manual', 'primary')]);
+  rows.push(...navRows());
   return rows;
 }
 
@@ -40,12 +40,12 @@ export function confirmRows(hideSender?: boolean): DialogButton[][] {
       button(hideSender ? 'Show original sender' : 'Hide original sender', hideSender ? 'sender:0' : 'sender:1'),
     ]);
   }
-  rows.push([button('Confirm and activate', 'ok', 'success')], [button('Back', 'back'), button('Cancel', 'cancel')]);
+  rows.push([button('Confirm and activate', 'ok', 'success')], ...navRows());
   return rows;
 }
 
 export function manualRows(): DialogButton[][] {
-  return [[button('Back', 'back'), button('Cancel', 'cancel')]];
+  return navRows();
 }
 
 export function rulesRows(slice: Page<Rule>, mode: 'view' | 'toggle' | 'edit' | 'delete'): DialogButton[][] {
@@ -90,7 +90,8 @@ export function deleteConfirmRows(ruleId: number): DialogButton[][] {
 
 export function settingsRows(): DialogButton[][] {
   return [
-    [button('Pause all', 'set-pause'), button('Resume all', 'set-resume', 'success')],
+    [button('Pause all', 'set-pause')],
+    [button('Resume all', 'set-resume', 'success')],
     [button('Clear logs', 'set-clear', 'danger')],
     [button('Menu', 'menu')],
   ];
@@ -106,6 +107,10 @@ export function logsRows(page: number, pages: number): DialogButton[][] {
   if (pager.length > 0) rows.push(pager);
   rows.push([button('Menu', 'menu')]);
   return rows;
+}
+
+function navRows(): DialogButton[][] {
+  return [[button('Back', 'back')], [button('Cancel', 'cancel')]];
 }
 
 function pageRow(page: number, pages: number, prefix: string): DialogButton[] {
