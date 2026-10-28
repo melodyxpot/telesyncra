@@ -1,0 +1,36 @@
+{
+  "name": "telesyncra",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Personal Telegram auto-forward manager. A GramJS user client forwards new messages; a private bot provides the control menu.",
+  "type": "module",
+  "packageManager": "pnpm@11.21.0",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "dev": "tsx watch src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "eslint src tests",
+    "check": "pnpm run typecheck && pnpm run lint && pnpm run test"
+  },
+  "dependencies": {
+    "big-integer": "^1.6.52",
+    "dotenv": "^18.0.9",
+    "input": "^1.0.1",
+    "node-telegram-bot-api": "^2.1.0",
+    "telegram": "^2.26.22"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.1",
+    "vitest": "^5.0.5"
+  }
+}
