@@ -132,6 +132,8 @@ function rule(id: number, status: Rule['status']): Rule {
     destUsername: 'news',
     destAccessHash: '2',
     hideSender: true,
+    notify: 'off',
+    ownerUserId: '1',
     baselineMessageId: 1,
     createdAt: 1,
     updatedAt: 1,

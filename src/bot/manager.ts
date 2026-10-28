@@ -1,18 +1,23 @@
 import { Bot, type Context } from 'node-telegram-bot-api';
+import { Api, TelegramClient } from 'telegram';
 import { parseCallback, type CallbackAction } from '../access/callbacks.js';
-import { isAllowedUser } from '../access/guard.js';
 import { CHAT_PAGE_SIZE, LOG_PAGE_SIZE, RULE_PAGE_SIZE } from '../constants.js';
+import type { AccountStore } from '../db/accounts.js';
 import type { LogRepository } from '../db/logs.js';
 import type { RuleRepository } from '../db/rules.js';
 import { AppError, ChatResolveError } from '../errors.js';
 import type { Logger } from '../logger.js';
+import { AccountPool } from '../telegram/account-pool.js';
+import { isLoginCancel, LoginCancelled, runBotLogin } from '../telegram/bot-login.js';
 import type { ChatDirectory } from '../telegram/directory.js';
+import { createTelegramClient } from '../telegram/user-client.js';
 import { chatFromRule } from '../telegram/peers.js';
-import type { ChatKind, ResolvedChat } from '../types.js';
+import type { AppConfig } from '../config.js';
+import type { ChatKind, NotifyMode, ResolvedChat } from '../types.js';
 import { SerialQueue } from '../util/serial-queue.js';
 import { formatChat, formatLog, formatRule, helpText, kindPrompt, oneLine, ruleSummary } from './copy.js';
 import { mdEscape } from './rich-text.js';
-import { dialogLines, REPLY_PLACEHOLDER, replyNudge, type Dialog } from './dialog.js';
+import { button, dialogKeyboard, dialogLines, renderDialog, REPLY_PLACEHOLDER, replyNudge, type Dialog } from './dialog.js';
 import {
   chatPickerRows,
   clearLogsRows,
@@ -23,21 +28,39 @@ import {
   logsRows,
   mainMenuRows,
   manualRows,
+  peopleRows,
+  removePersonRows,
   rulesRows,
   settingsRows,
 } from './keyboards.js';
+import { nextNotifyMode } from './notify-mode.js';
 import { pageSlice } from './paging.js';
 import { present } from './present.js';
 import { createWizard, editWizard, isManual, WizardStore, type CreatePhase, type EditPhase, type Wizard } from './wizard.js';
 
 export interface ManagerDeps {
   allowedUserId: string;
+  api: Pick<AppConfig, 'apiId' | 'apiHash'>;
   rules: RuleRepository;
   logs: LogRepository;
-  directory: ChatDirectory;
-  selfId: () => string | null;
-  connected: () => boolean;
+  accounts: AccountStore;
+  pool: AccountPool;
   logger: Logger;
+}
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve(value: T): void;
+  reject(error: Error): void;
+}
+
+interface LoginAttempt {
+  client: TelegramClient;
+  chatId: number;
+  api: Context['api'];
+  phase: 'phone' | 'code' | 'password';
+  wait: Deferred<string> | null;
+  cancelled: boolean;
 }
 
 export function registerManager(bot: Bot, deps: ManagerDeps): void {
@@ -45,32 +68,48 @@ export function registerManager(bot: Bot, deps: ManagerDeps): void {
 }
 
 class Manager {
-  private readonly wizard = new WizardStore();
+  private readonly wizards = new Map<string, WizardStore>();
   private readonly queue = new SerialQueue();
-  /** The dialog message button taps rewrite. */
-  private anchorId?: number;
-  /** The short message that opened the reply bar. */
-  private promptId?: number;
+  private readonly threads = new Map<number, { anchorId?: number; promptId?: number }>();
+  private readonly logins = new Map<string, LoginAttempt>();
+  private actor = '';
 
   constructor(private readonly deps: ManagerDeps) {}
 
+  private get wizard(): WizardStore {
+    const key = this.actor || '0';
+    let store = this.wizards.get(key);
+    if (!store) {
+      store = new WizardStore();
+      this.wizards.set(key, store);
+    }
+    return store;
+  }
+
   register(bot: Bot): void {
     bot.use(async (ctx, next) => {
-      if (!isAllowedUser(ctx.from?.id, this.deps.allowedUserId)) {
-        if (ctx.callbackQuery) {
-          await ctx.answerCallbackQuery({ text: 'This bot is private.', show_alert: true }).catch(() => undefined);
-        } else if (ctx.chat?.type === 'private') {
-          await ctx.reply('This bot is private.').catch(() => undefined);
-        }
+      if (ctx.chat && ctx.chat.type !== 'private') return;
+      const userId = ctx.from?.id === undefined ? '' : String(ctx.from.id);
+      if (!userId) return;
+      if (userId === this.deps.allowedUserId || this.deps.accounts.hasAccess(userId)) {
+        await next();
         return;
       }
-      if (ctx.chat && ctx.chat.type !== 'private') return;
-      await next();
+      const text = ctx.message?.text?.trim() ?? '';
+      if (text && !text.startsWith('/') && this.deps.accounts.matchesInvite(text)) {
+        await next();
+        return;
+      }
+      if (ctx.callbackQuery) {
+        await ctx.answerCallbackQuery({ text: 'This bot is private.', show_alert: true }).catch(() => undefined);
+      } else {
+        await ctx.reply('This bot is private. Send your one-time invite code if you have one.').catch(() => undefined);
+      }
     });
 
     bot.command(['start', 'menu'], (ctx) => this.run(ctx, () => this.showMain(ctx)));
     bot.command('help', (ctx) =>
-      this.run(ctx, () => this.show(ctx, { title: 'Help', lines: dialogLines(helpText()), rows: mainMenuRows() })),
+      this.run(ctx, () => this.show(ctx, { title: 'Help', lines: dialogLines(helpText()), rows: this.menuRows() })),
     );
     bot.command('status', (ctx) => this.run(ctx, () => this.showStatus(ctx)));
     bot.command('cancel', (ctx) => this.run(ctx, () => this.showMain(ctx)));
@@ -93,6 +132,7 @@ class Manager {
 
   private run(ctx: Context, task: () => Promise<void>): Promise<void> {
     return this.queue.add(async () => {
+      this.actor = ctx.from?.id === undefined ? '' : String(ctx.from.id);
       try {
         await task();
       } catch (error) {
@@ -107,7 +147,7 @@ class Manager {
         await this.show(ctx, {
           title: keepManual ? 'Try another chat' : 'Something went wrong',
           lines: [mdEscape(safe)],
-          rows: keepManual ? manualRows() : mainMenuRows(),
+          rows: keepManual ? manualRows() : this.menuRows(),
           ...(keepManual ? { replyPlaceholder: REPLY_PLACEHOLDER } : {}),
         }).catch(() => undefined);
       }
@@ -118,8 +158,24 @@ class Manager {
     switch (action.type) {
       case 'menu':
       case 'cancel':
+        this.abortLogin();
         return this.showMain(ctx);
+      case 'sign_in':
+        return this.beginSignIn(ctx);
+      case 'invite':
+        return this.createInvite(ctx);
+      case 'people':
+        return this.showPeople(ctx);
+      case 'remove_ask':
+        return this.askRemove(ctx, action.userId);
+      case 'remove_confirm':
+        return this.removePerson(ctx, action.userId);
+      case 'notify':
+        return this.onNotifyChoice(ctx, action.mode);
+      case 'notify_rule':
+        return this.cycleNotify(ctx, action.ruleId);
       case 'create':
+        if (!this.deps.pool.connected(this.actor)) return this.beginSignIn(ctx);
         this.wizard.set(createWizard());
         return this.showKind(ctx, 'source');
       case 'kind':
@@ -172,7 +228,7 @@ class Manager {
           rows: clearLogsRows(),
         });
       case 'clear_logs': {
-        const removed = this.deps.logs.clearAll();
+        const removed = this.deps.logs.clearAll(this.actor);
         return this.show(ctx, { title: 'Logs cleared', lines: [`Cleared ${removed} log entries.`], rows: settingsRows() });
       }
       default:
@@ -183,18 +239,20 @@ class Manager {
   private async onText(ctx: Context): Promise<void> {
     const text = ctx.message?.text;
     if (!text || text.startsWith('/')) return;
+    if (await this.acceptLoginText(ctx, text)) return;
+    if (await this.acceptInvite(ctx, text)) return;
     const wizard = this.wizard.get();
     if (!wizard || !isManual(wizard)) {
       await this.show(ctx, {
         title: 'Use the buttons',
         lines: ['Send /menu to open the dialog again.'],
-        rows: mainMenuRows(),
+        rows: this.menuRows(),
       });
       return;
     }
     const kind = manualKind(wizard);
     if (!kind) return this.expired(ctx);
-    const chat = await this.deps.directory.resolve(text, kind);
+    const chat = await this.directory().resolve(text, kind);
     await this.selectChat(ctx, wizard, chat);
   }
 
@@ -304,16 +362,19 @@ class Manager {
   private async confirmCreate(ctx: Context, wizard: Extract<Wizard, { type: 'create' }>): Promise<void> {
     if (wizard.phase !== 'confirm' || !wizard.source || !wizard.destination) return this.expired(ctx);
     const selfId = this.requireSelf();
-    const baseline = await this.deps.directory.latestMessageId(wizard.source);
+    const baseline = await this.directory().latestMessageId(wizard.source);
     const rule = this.deps.rules.create({
       source: wizard.source,
       destination: wizard.destination,
       selfUserId: selfId,
       baselineMessageId: baseline,
       hideSender: wizard.hideSender,
+      notify: wizard.notify,
     });
+    await this.deps.pool.announce(this.actor, rule, 'started');
     this.deps.logs.write({
       ruleId: rule.id,
+      ownerUserId: this.actor,
       sourceChatId: rule.sourceMarkedId,
       messageId: null,
       level: 'info',
@@ -324,22 +385,22 @@ class Manager {
     await this.show(ctx, {
       title: 'Rule active',
       lines: [`Rule #${rule.id} is active.`, 'Only messages newer than the current source history will be forwarded.'],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
   private async confirmEdit(ctx: Context, wizard: Extract<Wizard, { type: 'edit' }>): Promise<void> {
     if (wizard.phase !== 'confirm' || !wizard.candidate) return this.expired(ctx);
-    const existing = this.deps.rules.get(wizard.ruleId);
+    const existing = this.deps.rules.get(wizard.ruleId, this.actor);
     if (!existing) return this.missing(ctx);
     const source = wizard.field === 'source' ? wizard.candidate : chatFromRule(existing, 'source');
-    const baseline = await this.deps.directory.latestMessageId(source);
+    const baseline = await this.directory().latestMessageId(source);
     const rule = this.deps.rules.updateEndpoint(wizard.ruleId, wizard.field, wizard.candidate, baseline, this.requireSelf());
     this.wizard.clear();
     await this.show(ctx, {
       title: 'Rule updated',
       lines: dialogLines(`Rule #${rule.id} was updated. Older messages will not be backfilled.`, formatRule(rule)),
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
@@ -361,15 +422,15 @@ class Manager {
       wizard.phase = 'confirm';
       await this.show(ctx, {
         title: 'Review the rule',
-        lines: dialogLines(ruleSummary(wizard.source, chat, wizard.hideSender)),
-        rows: confirmRows(wizard.hideSender),
+        lines: dialogLines(ruleSummary(wizard.source, chat, wizard.hideSender, wizard.notify)),
+        rows: confirmRows(wizard.hideSender, wizard.notify),
       });
       return;
     }
     if (wizard.type === 'edit' && (wizard.phase === 'pick' || wizard.phase === 'manual')) {
       wizard.candidate = chat;
       wizard.phase = 'confirm';
-      const existing = this.deps.rules.get(wizard.ruleId);
+      const existing = this.deps.rules.get(wizard.ruleId, this.actor);
       if (!existing) return this.missing(ctx);
       const source = wizard.field === 'source' ? chat : chatFromRule(existing, 'source');
       const destination = wizard.field === 'dest' ? chat : chatFromRule(existing, 'dest');
@@ -391,7 +452,7 @@ class Manager {
     phase: CreatePhase | EditPhase,
   ): Promise<void> {
     await this.show(ctx, { title: 'One moment', lines: ['Loading recent chats from your account.'], rows: [] });
-    wizard.candidates = await this.deps.directory.list(kind, includeSelf);
+    wizard.candidates = await this.directory().list(kind, includeSelf);
     wizard.page = 0;
     wizard.updatedAt = Date.now();
     if (wizard.type === 'create') wizard.phase = phase as CreatePhase;
@@ -417,9 +478,9 @@ class Manager {
   }
 
   private async showRules(ctx: Context, page: number, mode: 'view' | 'toggle' | 'edit' | 'delete'): Promise<void> {
-    const rules = this.deps.rules.list();
+    const rules = this.deps.rules.list(this.actor);
     if (rules.length === 0) {
-      await this.show(ctx, { title: 'No rules yet', lines: ['Create a forwarding rule to begin.'], rows: mainMenuRows() });
+      await this.show(ctx, { title: 'No rules yet', lines: ['Create a forwarding rule to begin.'], rows: this.menuRows() });
       return;
     }
     const slice = pageSlice(rules, page, RULE_PAGE_SIZE);
@@ -440,19 +501,21 @@ class Manager {
   }
 
   private async toggleRule(ctx: Context, ruleId: number): Promise<void> {
-    const rule = this.deps.rules.get(ruleId);
+    const rule = this.deps.rules.get(ruleId, this.actor);
     if (!rule) return this.missing(ctx);
     if (rule.status === 'active') {
-      this.deps.rules.pause(ruleId);
-      await this.show(ctx, { title: 'Paused', lines: [`Rule #${ruleId} is paused.`], rows: mainMenuRows() });
+      const paused = this.deps.rules.pause(ruleId, this.actor);
+      await this.deps.pool.announce(this.actor, paused, 'paused');
+      await this.show(ctx, { title: 'Paused', lines: [`Rule #${ruleId} is paused.`], rows: this.menuRows() });
       return;
     }
-    const baseline = await this.deps.directory.latestMessageId(chatFromRule(rule, 'source'));
-    this.deps.rules.activate(ruleId, baseline);
+    const baseline = await this.directory().latestMessageId(chatFromRule(rule, 'source'));
+    const started = this.deps.rules.activate(ruleId, baseline, this.actor);
+    await this.deps.pool.announce(this.actor, started, 'started');
     await this.show(ctx, {
       title: 'Active',
       lines: [`Rule #${ruleId} is active.`, 'Messages that arrived while it was paused are not forwarded.'],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
@@ -465,31 +528,31 @@ class Manager {
     wizard.updatedAt = Date.now();
     await this.show(ctx, {
       title: 'Review the rule',
-      lines: dialogLines(ruleSummary(wizard.source, wizard.destination, hide)),
-      rows: confirmRows(hide),
+      lines: dialogLines(ruleSummary(wizard.source, wizard.destination, hide, wizard.notify)),
+      rows: confirmRows(hide, wizard.notify),
     });
   }
 
   private async toggleHideSender(ctx: Context, ruleId: number): Promise<void> {
-    const rule = this.deps.rules.get(ruleId);
+    const rule = this.deps.rules.get(ruleId, this.actor);
     if (!rule) return this.missing(ctx);
-    this.deps.rules.setHideSender(ruleId, !rule.hideSender);
+    this.deps.rules.setHideSender(ruleId, !rule.hideSender, this.actor);
     await this.showEditFields(ctx, ruleId);
   }
 
   private async showEditFields(ctx: Context, ruleId: number): Promise<void> {
-    const rule = this.deps.rules.get(ruleId);
+    const rule = this.deps.rules.get(ruleId, this.actor);
     if (!rule) return this.missing(ctx);
     this.wizard.clear();
     await this.show(ctx, {
       title: `Rule #${rule.id}`,
       lines: dialogLines(formatRule(rule), 'What do you want to change?'),
-      rows: editFieldRows(ruleId, rule.hideSender),
+      rows: editFieldRows(ruleId, rule.hideSender, rule.notify),
     });
   }
 
   private async askDelete(ctx: Context, ruleId: number): Promise<void> {
-    const rule = this.deps.rules.get(ruleId);
+    const rule = this.deps.rules.get(ruleId, this.actor);
     if (!rule) return this.missing(ctx);
     await this.show(ctx, {
       title: `Delete rule #${rule.id}?`,
@@ -499,19 +562,21 @@ class Manager {
   }
 
   private async deleteRule(ctx: Context, ruleId: number): Promise<void> {
-    const removed = this.deps.rules.delete(ruleId);
+    const existing = this.deps.rules.get(ruleId, this.actor);
+    if (existing) await this.deps.pool.announce(this.actor, existing, 'stopped');
+    const removed = this.deps.rules.delete(ruleId, this.actor);
     await this.show(ctx, {
       title: removed ? 'Deleted' : 'Already gone',
       lines: [removed ? `Rule #${ruleId} was deleted.` : 'That rule no longer exists.'],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
   private async showLogs(ctx: Context, page: number): Promise<void> {
-    const total = this.deps.logs.count();
+    const total = this.deps.logs.count(this.actor);
     const pages = Math.max(1, Math.ceil(total / LOG_PAGE_SIZE));
     const safe = Math.min(Math.max(0, page), pages - 1);
-    const entries = this.deps.logs.list(safe * LOG_PAGE_SIZE, LOG_PAGE_SIZE);
+    const entries = this.deps.logs.list(safe * LOG_PAGE_SIZE, LOG_PAGE_SIZE, this.actor);
     const body = entries.length === 0 ? 'No forwarding logs yet. Message text is never stored.' : entries.map((entry) => formatLog(entry)).join('\n\n');
     await this.show(ctx, {
       title: 'Logs',
@@ -521,14 +586,14 @@ class Manager {
   }
 
   private async showSettings(ctx: Context): Promise<void> {
-    const counts = this.deps.rules.counts();
+    const counts = this.deps.rules.counts(this.actor);
     await this.show(ctx, {
       title: 'Settings',
       lines: [
-        `**User client.** ${this.deps.connected() ? 'connected' : 'disconnected'}`,
+        `**User client.** ${this.deps.pool.connected(this.actor) ? 'connected' : 'disconnected'}`,
         `**Active rules.** ${counts.active}`,
         `**Paused rules.** ${counts.paused}`,
-        'Menu access is limited to the configured user.',
+        'Only you and people with a one-time invite can open this bot.',
         'Pausing does not delete rules. Resuming does not backfill older messages.',
       ],
       rows: settingsRows(),
@@ -536,7 +601,9 @@ class Manager {
   }
 
   private async pauseAll(ctx: Context): Promise<void> {
-    const paused = this.deps.rules.pauseAll();
+    const active = this.deps.rules.list(this.actor).filter((rule) => rule.status === 'active');
+    const paused = this.deps.rules.pauseAll(this.actor);
+    for (const rule of active) await this.deps.pool.announce(this.actor, { ...rule, status: 'paused' }, 'paused');
     await this.show(ctx, {
       title: 'Paused',
       lines: [`Paused ${paused} active rule${paused === 1 ? '' : 's'}.`],
@@ -545,13 +612,14 @@ class Manager {
   }
 
   private async resumeAll(ctx: Context): Promise<void> {
-    const paused = this.deps.rules.list().filter((rule) => rule.status === 'paused');
+    const paused = this.deps.rules.list(this.actor).filter((rule) => rule.status === 'paused');
     let started = 0;
     let failed = 0;
     for (const rule of paused) {
       try {
-        const baseline = await this.deps.directory.latestMessageId(chatFromRule(rule, 'source'));
-        this.deps.rules.activate(rule.id, baseline);
+        const baseline = await this.directory().latestMessageId(chatFromRule(rule, 'source'));
+        const resumed = this.deps.rules.activate(rule.id, baseline, this.actor);
+        await this.deps.pool.announce(this.actor, resumed, 'started');
         started += 1;
       } catch (error) {
         failed += 1;
@@ -576,24 +644,24 @@ class Manager {
         'Forward **new** messages from chats your account can access.',
         '*This bot only controls the rules. It does not read your private chats.*',
       ],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
   private async showStatus(ctx: Context): Promise<void> {
-    const counts = this.deps.rules.counts();
-    const selfId = this.deps.selfId();
+    const counts = this.deps.rules.counts(this.actor);
+    const selfId = this.deps.pool.selfId(this.actor);
     await this.show(ctx, {
       title: 'Status',
       lines: [
-        `**User client.** ${this.deps.connected() ? 'connected' : 'disconnected'}`,
+        `**User client.** ${this.deps.pool.connected(this.actor) ? 'connected' : 'disconnected'}`,
         `**Account id.** ${selfId ?? 'unavailable'}`,
         `**Active rules.** ${counts.active}`,
         `**Paused rules.** ${counts.paused}`,
-        'Menu access is limited to the configured user.',
+        'Only you and people with a one-time invite can open this bot.',
         'Session file: stored locally with restricted permissions.',
       ],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
@@ -602,12 +670,12 @@ class Manager {
     await this.show(ctx, {
       title: 'Step expired',
       lines: ['Open the menu and start again.'],
-      rows: mainMenuRows(),
+      rows: this.menuRows(),
     });
   }
 
   private async missing(ctx: Context): Promise<void> {
-    await this.show(ctx, { title: 'Missing rule', lines: ['That rule no longer exists.'], rows: mainMenuRows() });
+    await this.show(ctx, { title: 'Missing rule', lines: ['That rule no longer exists.'], rows: this.menuRows() });
   }
 
   private showKind(ctx: Context, side: 'source' | 'destination'): Promise<void> {
@@ -616,27 +684,28 @@ class Manager {
   }
 
   private async show(ctx: Context, dialog: Dialog): Promise<void> {
+    const thread = this.thread(ctx);
     if (dialog.replyPlaceholder) {
-      const editingAnchor = this.anchorId !== undefined && ctx.callbackQuery?.message?.message_id === this.anchorId;
-      if (!editingAnchor) await this.deleteStored(ctx, this.anchorId);
-      await this.deleteStored(ctx, this.promptId);
-      this.promptId = undefined;
+      const editingAnchor = thread.anchorId !== undefined && ctx.callbackQuery?.message?.message_id === thread.anchorId;
+      if (!editingAnchor) await this.deleteStored(ctx, thread.anchorId);
+      await this.deleteStored(ctx, thread.promptId);
+      thread.promptId = undefined;
       const anchor = await present(ctx, { ...dialog, replyPlaceholder: undefined });
-      this.anchorId = anchor.messageId;
+      thread.anchorId = anchor.messageId;
       const prompt = await present(ctx, replyNudge(dialog.replyPlaceholder));
-      this.promptId = prompt.messageId;
+      thread.promptId = prompt.messageId;
       return;
     }
 
-    const editingAnchor = this.anchorId !== undefined && ctx.callbackQuery?.message?.message_id === this.anchorId;
-    if (this.promptId !== undefined && !editingAnchor) {
-      await this.deleteStored(ctx, this.anchorId);
-      this.anchorId = undefined;
+    const editingAnchor = thread.anchorId !== undefined && ctx.callbackQuery?.message?.message_id === thread.anchorId;
+    if (thread.promptId !== undefined && !editingAnchor) {
+      await this.deleteStored(ctx, thread.anchorId);
+      thread.anchorId = undefined;
     }
-    await this.deleteStored(ctx, this.promptId);
-    this.promptId = undefined;
+    await this.deleteStored(ctx, thread.promptId);
+    thread.promptId = undefined;
     const shown = await present(ctx, dialog);
-    this.anchorId = shown.messageId;
+    thread.anchorId = shown.messageId;
   }
 
   private async deleteStored(ctx: Context, messageId: number | undefined): Promise<void> {
@@ -646,10 +715,281 @@ class Manager {
   }
 
   private requireSelf(): string {
-    const selfId = this.deps.selfId();
-    if (!selfId) throw new AppError('The user client is not authorized yet.');
+    const selfId = this.deps.pool.selfId(this.actor);
+    if (!selfId) throw new AppError('Sign in with your phone number before creating a rule.');
     return selfId;
   }
+
+  private directory(): ChatDirectory {
+    const directory = this.deps.pool.directory(this.actor);
+    if (!directory) throw new AppError('Sign in with your phone number before choosing a chat.');
+    return directory;
+  }
+
+  private menuRows() {
+    return mainMenuRows({ admin: this.actor === this.deps.allowedUserId, signedIn: this.deps.pool.connected(this.actor) });
+  }
+
+  private thread(ctx: Context): { anchorId?: number; promptId?: number } {
+    const chatId = ctx.chatId ?? 0;
+    let thread = this.threads.get(chatId);
+    if (!thread) {
+      thread = {};
+      this.threads.set(chatId, thread);
+    }
+    return thread;
+  }
+
+  private async onNotifyChoice(ctx: Context, mode: NotifyMode): Promise<void> {
+    const wizard = this.wizard.get();
+    if (!wizard || wizard.type !== 'create' || wizard.phase !== 'confirm' || !wizard.source || !wizard.destination) {
+      return this.expired(ctx);
+    }
+    wizard.notify = mode;
+    wizard.updatedAt = Date.now();
+    await this.show(ctx, {
+      title: 'Review the rule',
+      lines: dialogLines(ruleSummary(wizard.source, wizard.destination, wizard.hideSender, mode)),
+      rows: confirmRows(wizard.hideSender, mode),
+    });
+  }
+
+  private async cycleNotify(ctx: Context, ruleId: number): Promise<void> {
+    const rule = this.deps.rules.get(ruleId, this.actor);
+    if (!rule) return this.missing(ctx);
+    this.deps.rules.setNotify(ruleId, nextNotifyMode(rule.notify), this.actor);
+    await this.showEditFields(ctx, ruleId);
+  }
+
+  private async createInvite(ctx: Context): Promise<void> {
+    if (this.actor !== this.deps.allowedUserId) return this.showMain(ctx);
+    const code = this.deps.accounts.createInvite();
+    await this.show(ctx, {
+      title: 'One-time invite',
+      lines: [
+        'Send this code to one person. It works once and expires in 24 hours.',
+        `\`${code}\``,
+        'They open this bot and send the code. Then they sign in with their own phone number.',
+      ],
+      rows: this.menuRows(),
+    });
+  }
+
+  private async showPeople(ctx: Context): Promise<void> {
+    if (this.actor !== this.deps.allowedUserId) return this.showMain(ctx);
+    const people = this.deps.accounts.listMembers();
+    await this.show(ctx, {
+      title: 'People',
+      lines:
+        people.length === 0
+          ? ['Nobody else has joined yet. Create an invite and send the code to one person.']
+          : people.map((person) => `**${mdEscape(person.displayName)}** \`${person.userId}\``),
+      rows: peopleRows(people),
+    });
+  }
+
+  private async askRemove(ctx: Context, userId: string): Promise<void> {
+    if (this.actor !== this.deps.allowedUserId) return this.showMain(ctx);
+    const person = this.deps.accounts.get(userId);
+    if (!person || person.role !== 'member') return this.showPeople(ctx);
+    await this.show(ctx, {
+      title: 'Remove this person?',
+      lines: [
+        `**${mdEscape(person.displayName)}** loses the menu.`,
+        'Their rules stop and their saved login is deleted.',
+      ],
+      rows: removePersonRows(userId),
+    });
+  }
+
+  private async removePerson(ctx: Context, userId: string): Promise<void> {
+    if (this.actor !== this.deps.allowedUserId || userId === this.deps.allowedUserId) return this.showMain(ctx);
+    const removed = this.deps.accounts.revoke(userId);
+    if (removed) {
+      this.deps.rules.pauseAll(userId);
+      await this.deps.pool.drop(userId);
+    }
+    await this.show(ctx, {
+      title: removed ? 'Removed' : 'Already gone',
+      lines: [removed ? 'That person can no longer use the bot.' : 'That person is not an active member.'],
+      rows: this.menuRows(),
+    });
+  }
+
+  private async acceptInvite(ctx: Context, text: string): Promise<boolean> {
+    if (this.actor === this.deps.allowedUserId || this.deps.accounts.hasAccess(this.actor)) return false;
+    if (!this.deps.accounts.redeem(text, this.actor)) {
+      await this.show(ctx, {
+        title: 'Invite not accepted',
+        lines: ['That code is missing, expired, or already used.'],
+        rows: [],
+      });
+      return true;
+    }
+    const from = ctx.from;
+    const name = [from?.first_name, from?.last_name].filter(Boolean).join(' ').trim() || 'Telegram user';
+    this.deps.accounts.grantMember(this.actor, name, from?.username ?? null);
+    await this.deleteSecret(ctx);
+    await this.beginSignIn(ctx);
+    return true;
+  }
+
+  private async acceptLoginText(ctx: Context, text: string): Promise<boolean> {
+    const attempt = this.logins.get(this.actor);
+    if (!attempt || !attempt.wait) return false;
+    await this.deleteSecret(ctx);
+    const value = text.trim();
+    if (attempt.phase === 'phone' && !/^\+\d{8,15}$/.test(value.replace(/[\s()-]/g, ''))) {
+      await this.tell(attempt, {
+        title: 'Phone number',
+        lines: ['Use international format, for example `+15551234567`.'],
+        rows: [[button('Cancel', 'cancel')]],
+      });
+      return true;
+    }
+    if (attempt.phase === 'code' && !/^\d{5,6}$/.test(value.replace(/\s+/g, ''))) {
+      await this.tell(attempt, {
+        title: 'Login code',
+        lines: ['Send the numeric code Telegram showed you. It is deleted from this chat.'],
+        rows: [[button('Cancel', 'cancel')]],
+      });
+      return true;
+    }
+    if (attempt.phase === 'password' && value.length === 0) return true;
+    const wait = attempt.wait;
+    attempt.wait = null;
+    wait.resolve(attempt.phase === 'phone' ? value.replace(/[\s()-]/g, '') : attempt.phase === 'code' ? value.replace(/\s+/g, '') : value);
+    return true;
+  }
+
+  private async beginSignIn(ctx: Context): Promise<void> {
+    if (this.deps.pool.connected(this.actor)) return this.showMain(ctx);
+    if (!ctx.chatId) return;
+    this.abortLogin();
+    const client = createTelegramClient(this.deps.api, '');
+    const attempt: LoginAttempt = {
+      client,
+      chatId: ctx.chatId,
+      api: ctx.api,
+      phase: 'phone',
+      wait: null,
+      cancelled: false,
+    };
+    this.logins.set(this.actor, attempt);
+    const userId = this.actor;
+    void runBotLogin(client, {
+      phone: (retry) => this.askSecret(attempt, 'phone', retry),
+      code: (retry) => this.askSecret(attempt, 'code', retry),
+      password: (retry) => this.askSecret(attempt, 'password', retry),
+      rejected: async (message) => {
+        await this.tell(attempt, {
+          title: 'Sign-in stopped',
+          lines: [mdEscape(message)],
+          rows: mainMenuRows({ admin: userId === this.deps.allowedUserId, signedIn: false }),
+        });
+      },
+      cancelled: () => attempt.cancelled,
+    })
+      .then(async () => {
+        if (attempt.cancelled || this.logins.get(userId) !== attempt) return;
+        const me = await client.getMe();
+        if (me.id.toString() !== userId) {
+          await client.invoke(new Api.auth.LogOut()).catch(() => undefined);
+          await client.disconnect().catch(() => undefined);
+          this.logins.delete(userId);
+          await this.tell(attempt, {
+            title: 'Wrong account',
+            lines: ['Sign in with the same Telegram account that is chatting with this bot.'],
+            rows: [[button('Try again', 'signin', 'primary')]],
+          });
+          return;
+        }
+        const name = [me.firstName, me.lastName].filter(Boolean).join(' ').trim() || 'Telegram user';
+        if (userId === this.deps.allowedUserId) this.deps.accounts.ensureAdmin(userId);
+        this.deps.accounts.rememberProfile(userId, name, me.username ?? null);
+        await this.deps.pool.adopt(userId, client);
+        this.logins.delete(userId);
+        await this.tell(attempt, {
+          title: 'Signed in',
+          lines: ['This account can forward new messages. Your rules stay separate from everyone else.'],
+          rows: mainMenuRows({ admin: userId === this.deps.allowedUserId, signedIn: true }),
+        });
+      })
+      .catch(async (error: unknown) => {
+        this.logins.delete(userId);
+        await client.disconnect().catch(() => undefined);
+        if (isLoginCancel(error) || attempt.cancelled) return;
+        this.deps.logger.warn({ event: 'sign_in_failed', userId, code: error instanceof Error ? error.name : 'Error' }, 'sign-in failed');
+        await this.tell(attempt, {
+          title: 'Sign-in stopped',
+          lines: ['Send /start and try again. The phone number and code were not saved.'],
+          rows: [[button('Try again', 'signin', 'primary')]],
+        }).catch(() => undefined);
+      });
+  }
+
+  private askSecret(attempt: LoginAttempt, phase: LoginAttempt['phase'], retry: boolean): Promise<string> {
+    const wait = deferred<string>();
+    attempt.phase = phase;
+    attempt.wait = wait;
+    const dialog =
+      phase === 'phone'
+        ? {
+            title: 'Phone number',
+            lines: [retry ? 'That number was not accepted. Send it as `+15551234567`.' : 'Send your phone number in international format, for example `+15551234567`.'],
+          }
+        : phase === 'code'
+          ? {
+              title: 'Login code',
+              lines: [
+                retry
+                  ? 'That code was not accepted. Send the latest code Telegram showed you.'
+                  : 'Telegram sent a login code to your account. Send that code here. This message is deleted.',
+              ],
+            }
+          : {
+              title: 'Two-step password',
+              lines: [retry ? 'That password was not accepted. Send it again.' : 'This account has a two-step password. Send it here. This message is deleted.'],
+            };
+    void this.tell(attempt, { ...dialog, rows: [[button('Cancel', 'cancel')]] });
+    return wait.promise;
+  }
+
+  private abortLogin(): void {
+    const attempt = this.logins.get(this.actor);
+    if (!attempt) return;
+    attempt.cancelled = true;
+    attempt.wait?.reject(new LoginCancelled());
+    void attempt.client.disconnect().catch(() => undefined);
+    this.logins.delete(this.actor);
+  }
+
+  private async tell(attempt: LoginAttempt, dialog: Dialog): Promise<void> {
+    const rich = renderDialog(dialog);
+    const keyboard = dialogKeyboard(dialog.rows);
+    await attempt.api.sendRichMessage({
+      chat_id: attempt.chatId,
+      rich_message: rich,
+      ...(keyboard ? { reply_markup: keyboard } : {}),
+    });
+  }
+
+  private async deleteSecret(ctx: Context): Promise<void> {
+    const chatId = ctx.chatId;
+    const messageId = ctx.message?.message_id;
+    if (chatId === undefined || messageId === undefined) return;
+    await ctx.api.deleteMessage({ chat_id: chatId, message_id: messageId }).catch(() => undefined);
+  }
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: Error) => void = () => undefined;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 }
 
 function isPickPhase(wizard: Wizard): boolean {

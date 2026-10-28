@@ -11,7 +11,7 @@ Forwarding is done with your user account through [GramJS](https://github.com/gr
 | List chats you belong to | Yes | No |
 | Read a private chat, group, or channel you can access | Yes | No. A bot cannot read your private chats. |
 | Forward a message you are allowed to forward | Yes | Only if the bot itself is in that chat and has permission. This app does not use the bot for forwarding. |
-| Show the control menu | No | Yes, and only to the user id in `ALLOWED_USER_ID` |
+| Show the control menu | No | Yes. The account in `ALLOWED_USER_ID` is the admin. Other people need a one-time invite. |
 
 Supported rule directions are private user, group (including supergroups), and channel, in any combination. The destination must be a chat **your account** can post to. Posting into a channel usually requires your account to be allowed to post there.
 
@@ -24,7 +24,7 @@ The saved session file is a login for your Telegram account. Anyone who copies i
 - Keep `.env`, `data/telesyncra.session`, and `data/telesyncra.db` on the machine that runs Telesyncra.
 - Do not commit them, paste them into chats, or upload them to a host, bot, or support form.
 - Telesyncra stores the session only on local disk and tries to limit the file to your OS user (`chmod 600` on Unix, `icacls` on Windows).
-- Login codes and the two-step password are typed in the terminal. They are not written to logs or sent to the management bot.
+- Login codes and the two-step password are typed into the bot, then that message is deleted. They are not written to logs or the database.
 - Logs record rule ids, message ids, and error codes. They do not record message text, captions, login codes, the API hash, the bot token, or the session.
 - Only forward messages you are allowed to share. Protected chats and `CHAT_FORWARDS_RESTRICTED` are left alone.
 - Run one copy. A second process is refused so two clients cannot forward the same message.
@@ -33,7 +33,7 @@ The `telegram` package (GramJS 2.26) is archived upstream. This project uses it 
 
 ## Setup
 
-Requirements: Node.js 22.13 or newer, pnpm, and an interactive terminal for the first login.
+Requirements: Node.js 22.13 or newer and pnpm. The first login happens in the bot, not in the terminal.
 
 ### 1. Telegram API credentials
 
@@ -57,7 +57,7 @@ The bot cannot see your private messages. It only receives the commands and butt
 
 `ALLOWED_USER_ID` is your numeric Telegram user id, not your phone number and not an `@username`.
 
-You can read it from a client that shows numeric ids, or send `/start` to a public id bot you already trust, such as [@userinfobot](https://t.me/userinfobot). Only that id can open the menu. Everyone else gets "This bot is private."
+You can read it from a client that shows numeric ids, or send `/start` to a public id bot you already trust, such as [@userinfobot](https://t.me/userinfobot). That id is the admin. Everyone else needs a one-time invite from the admin. Without one, the bot says it is private.
 
 ### 4. Install and configure
 
@@ -91,13 +91,15 @@ pnpm start
 
 `pnpm run check` runs the TypeScript typecheck, ESLint, and the test suite.
 
-The first start must be an interactive terminal. Telesyncra asks for:
+When the process is up it prints `Telesyncra is running`. Open your bot and send `/start`, then tap **Sign in**. Telesyncra asks for:
 
 1. Your phone number in international format, for example `+15551234567`.
-2. The login code Telegram sends to your account.
-3. The two-step verification password, if you enabled it.
+2. The login code Telegram sends to your account. Send it in the bot. That message is deleted.
+3. The two-step verification password, if you enabled it. That message is deleted too.
 
-A later start reuses `data/telesyncra.session` and does not ask again. When the process is up it prints `Telesyncra is running`. Open your bot and send `/start`.
+A later start reuses the saved login in `data/sessions/`. An older `data/telesyncra.session` is copied for the admin once, when that login belongs to `ALLOWED_USER_ID`.
+
+**Create an invite** makes a code you can send to one person. It works once and expires after 24 hours. They open the bot, send the code, and sign in with their own phone number. Their rules and login stay separate from yours. **People** can remove them, which stops their rules and deletes their saved login.
 
 ## Using the menu
 
@@ -108,7 +110,8 @@ The button beside the message field opens the command list: `/start`, `/menu`, `
 - **Create a rule** — choose Private user, Group, or Channel for the source, pick a recent chat or enter a `@username` / numeric id, then do the same for the destination. On the review step, the original sender is hidden. Tap **Show original sender** if the recipient should see who wrote it. Confirm before the rule is saved.
 - **My rules** — status, source, destination, and whether the sender is hidden. No message text.
 - **Start or pause** — pausing stops forwarding. Starting again sets a new baseline, so messages from the pause are not sent later.
-- **Edit a rule** — change the source, the destination, or whether the original sender name is hidden. Changing a chat refreshes the baseline.
+- **Edit a rule** — change the source, the destination, whether the original sender name is hidden, or who is notified. Changing a chat refreshes the baseline.
+- **Notifications** — off, the sending user, the receiving user, or both. When forwarding starts, pauses, or is removed, that chat receives a short status message. The forwarded messages themselves are unchanged.
 - **Delete a rule** — removes the rule only. Messages already delivered stay in Telegram.
 - **Logs** — successes and error codes.
 - **Settings** — connection status, pause all, resume all, clear logs.
@@ -132,7 +135,7 @@ On startup, every active rule's baseline moves to the latest source message. His
 | What you see | What to do |
 | --- | --- |
 | `TG_API_ID` / `TG_API_HASH` / `BOT_TOKEN` error | Compare `.env` with the values from my.telegram.org and BotFather. The hash is 32 hex characters. |
-| Bot says "This bot is private." | `ALLOWED_USER_ID` is not the id of the account that tapped the button. |
+| Bot says "This bot is private." | You are not the admin, and the message was not a valid one-time invite. |
 | Bot does not answer | The process is not running, the token is wrong, or you have not sent `/start`. The bot cannot message you first. |
 | Login code never arrives | Check the Telegram app, not only SMS. Wait before requesting another code. Repeated requests cause `FLOOD_WAIT`. |
 | `FLOOD_WAIT` | Stop and wait. Do not start a second copy. |

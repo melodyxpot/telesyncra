@@ -201,6 +201,8 @@ function sampleRule(): Rule {
     destAccessHash: '2',
     status: 'active',
     hideSender: true,
+    notify: 'off',
+    ownerUserId: '1',
     baselineMessageId: 4,
     createdAt: 1,
     updatedAt: 1,

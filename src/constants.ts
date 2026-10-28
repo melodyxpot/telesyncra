@@ -16,3 +16,4 @@ export const RECONNECT_INTERVAL_MS = 20_000;
 export const ALBUM_BUFFER_MS = 700;
 export const MAX_AUTH_ATTEMPTS = 5;
 export const TITLE_MAX = 128;
+export const INVITE_TTL_MS = 24 * 60 * 60 * 1000;

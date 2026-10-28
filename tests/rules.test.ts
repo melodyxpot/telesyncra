@@ -35,6 +35,8 @@ describe('rule creation', () => {
       }
     }
     expect(rules.list()).toHaveLength(9);
+    expect(rules.list('9')).toHaveLength(9);
+    expect(rules.list('8')).toHaveLength(0);
     expect(rules.counts()).toEqual({ active: 9, paused: 0 });
   });
 
@@ -75,7 +77,7 @@ describe('rule creation', () => {
     expect(() => rules.create({ source, destination, selfUserId: '9', baselineMessageId: 4 })).toThrow(/already exists/);
 
     expect(rules.pause(rule.id).status).toBe('paused');
-    expect(rules.listActiveBySource('11')).toHaveLength(0);
+    expect(rules.listActiveBySource('9', '11')).toHaveLength(0);
     const started = rules.activate(rule.id, 40);
     expect(started.status).toBe('active');
     expect(started.baselineMessageId).toBe(40);
@@ -91,9 +93,11 @@ describe('rule creation', () => {
     expect(edited.baselineMessageId).toBe(50);
     expect(edited.sourceMarkedId).toBe('11');
     expect(rules.setHideSender(rule.id, false).hideSender).toBe(false);
+    expect(rules.setNotify(rule.id, 'source').notify).toBe('source');
     expect(rules.setHideSender(rule.id, true).hideSender).toBe(true);
 
     rules.claim(rule.id, '11', 51);
+    expect(rules.delete(rule.id, '8')).toBe(false);
     expect(rules.delete(rule.id)).toBe(true);
     expect(rules.get(rule.id)).toBeNull();
     const remaining = db.prepare('SELECT COUNT(*) AS count FROM processed_messages').get() as { count: number };
@@ -142,9 +146,11 @@ describe('rule creation', () => {
     `).run();
     raw.close();
 
-    const db = openDatabase(file);
-    const rule = new RuleRepository(db).list()[0];
+    const db = openDatabase(file, '100');
+    const rule = new RuleRepository(db).list('100')[0];
     expect(rule?.hideSender).toBe(true);
+    expect(rule?.ownerUserId).toBe('100');
+    expect(rule?.notify).toBe('off');
     db.close();
     rmSync(dir, { recursive: true, force: true });
   });

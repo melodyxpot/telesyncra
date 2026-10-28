@@ -1,18 +1,26 @@
-import type { ResolvedChat, Rule } from '../types.js';
+import type { NotifyMode, ResolvedChat, Rule } from '../types.js';
 import { oneLine } from './copy.js';
 import { button, type DialogButton } from './dialog.js';
+import { nextNotifyMode, notifyActionLabel } from './notify-mode.js';
 import type { Page } from './paging.js';
 
-export function mainMenuRows(): DialogButton[][] {
-  return [
-    [button('Create a rule', 'new', 'primary')],
-    [button('My rules', 'rules:0')],
-    [button('Start or pause', 'toggle:0', 'success')],
-    [button('Edit a rule', 'edit:0')],
-    [button('Delete a rule', 'del:0', 'danger')],
-    [button('Logs', 'logs:0')],
-    [button('Settings', 'set')],
-  ];
+export function mainMenuRows(options: { admin?: boolean; signedIn?: boolean } = { signedIn: true }): DialogButton[][] {
+  const signedIn = options.signedIn !== false;
+  const rows: DialogButton[][] = signedIn
+    ? [
+        [button('Create a rule', 'new', 'primary')],
+        [button('My rules', 'rules:0')],
+        [button('Start or pause', 'toggle:0', 'success')],
+        [button('Edit a rule', 'edit:0')],
+        [button('Delete a rule', 'del:0', 'danger')],
+        [button('Logs', 'logs:0')],
+        [button('Settings', 'set')],
+      ]
+    : [[button('Sign in', 'signin', 'primary')]];
+  if (options.admin) {
+    rows.push([button('Create an invite', 'inv-new')], [button('People', 'people')]);
+  }
+  return rows;
 }
 
 export function kindRows(): DialogButton[][] {
@@ -33,12 +41,15 @@ export function chatPickerRows(slice: Page<ResolvedChat>): DialogButton[][] {
   return rows;
 }
 
-export function confirmRows(hideSender?: boolean): DialogButton[][] {
+export function confirmRows(hideSender?: boolean, notify?: NotifyMode): DialogButton[][] {
   const rows: DialogButton[][] = [];
   if (hideSender !== undefined) {
     rows.push([
       button(hideSender ? 'Show original sender' : 'Hide original sender', hideSender ? 'sender:0' : 'sender:1'),
     ]);
+  }
+  if (notify !== undefined) {
+    rows.push([button(notifyActionLabel(notify), `note:${nextNotifyMode(notify)}`)]);
   }
   rows.push([button('Confirm and activate', 'ok', 'success')], ...navRows());
   return rows;
@@ -75,13 +86,24 @@ export function rulesRows(slice: Page<Rule>, mode: 'view' | 'toggle' | 'edit' | 
   return rows;
 }
 
-export function editFieldRows(ruleId: number, hideSender: boolean): DialogButton[][] {
+export function editFieldRows(ruleId: number, hideSender: boolean, notify: NotifyMode): DialogButton[][] {
   return [
     [button('Change source', `edit-src:${ruleId}`)],
     [button('Change destination', `edit-dst:${ruleId}`)],
     [button(hideSender ? 'Show original sender' : 'Hide original sender', `sender-id:${ruleId}`)],
+    [button(notifyActionLabel(notify), `note-id:${ruleId}`)],
     [button('Menu', 'menu')],
   ];
+}
+
+export function peopleRows(people: readonly { userId: string; displayName: string }[]): DialogButton[][] {
+  const rows = people.map((person) => [button(`Remove ${oneLine(person.displayName, 28)}`, `rm:${person.userId}`, 'danger')]);
+  rows.push([button('Menu', 'menu')]);
+  return rows;
+}
+
+export function removePersonRows(userId: string): DialogButton[][] {
+  return [[button('Remove this person', `rm-yes:${userId}`, 'danger')], [button('People', 'people')]];
 }
 
 export function deleteConfirmRows(ruleId: number): DialogButton[][] {

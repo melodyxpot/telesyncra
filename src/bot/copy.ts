@@ -1,5 +1,6 @@
 import { kindLabel } from '../telegram/peers.js';
-import type { ForwardLog, ResolvedChat, Rule } from '../types.js';
+import type { ForwardLog, NotifyMode, ResolvedChat, Rule } from '../types.js';
+import { notifySummary } from './notify-mode.js';
 import { mdEscape } from './rich-text.js';
 
 export function oneLine(value: string, max = 80): string {
@@ -28,6 +29,7 @@ export function formatRule(rule: Rule): string {
     `**From** ${formatChat({ kind: rule.sourceKind, title: rule.sourceTitle, username: rule.sourceUsername, markedId: rule.sourceMarkedId })}`,
     `**To** ${formatChat({ kind: rule.destKind, title: rule.destTitle, username: rule.destUsername, markedId: rule.destMarkedId })}`,
     rule.hideSender ? '*Sender hidden*' : '*Sender shown*',
+    notifySummary(rule.notify),
   ].join('\n');
 }
 
@@ -37,7 +39,7 @@ export function senderNote(hideSender: boolean): string {
     : 'The **original sender name stays** on the forwarded message.';
 }
 
-export function ruleSummary(source: ResolvedChat, destination: ResolvedChat, hideSender = true): string {
+export function ruleSummary(source: ResolvedChat, destination: ResolvedChat, hideSender = true, notify: NotifyMode = 'off'): string {
   return [
     `**From** ${formatChat(source)}`,
     `**To** ${formatChat(destination)}`,
@@ -46,6 +48,7 @@ export function ruleSummary(source: ResolvedChat, destination: ResolvedChat, hid
     '- Messages sent by your account are skipped.',
     '- Protected content is skipped. Telesyncra will not copy it or bypass Telegram.',
     `- ${senderNote(hideSender)}`,
+    `- ${notifySummary(notify)}`,
     '',
     '**Confirm** to save and activate the rule.',
   ].join('\n');
@@ -74,6 +77,8 @@ export function helpText(): string {
     '- Protected chats and messages that Telegram refuses to forward are skipped.',
     '',
     'Tap a button under the message. The reply bar opens when a step needs a username or id.',
+    'Sign in from the menu with your own phone number. Each person keeps their own rules.',
+    'An invite code works once. Ask the admin for a new one if it expires.',
     'Commands: `/menu` `/status` `/cancel` `/help`',
   ].join('\n');
 }

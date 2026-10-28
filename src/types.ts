@@ -1,6 +1,9 @@
 export type ChatKind = 'user' | 'group' | 'channel';
 export type PeerClass = 'user' | 'chat' | 'channel';
 export type RuleStatus = 'active' | 'paused';
+export type NotifyMode = 'off' | 'source' | 'dest' | 'both';
+export type AccountRole = 'admin' | 'member';
+export type AccountStatus = 'active' | 'revoked';
 export type ProcessStatus = 'pending' | 'forwarded' | 'skipped' | 'error';
 export type LogLevelName = 'debug' | 'info' | 'warn' | 'error';
 
@@ -40,6 +43,8 @@ export interface Rule {
   destAccessHash: string | null;
   status: RuleStatus;
   hideSender: boolean;
+  notify: NotifyMode;
+  ownerUserId: string;
   baselineMessageId: number;
   createdAt: number;
   updatedAt: number;
@@ -55,9 +60,20 @@ export interface InboundMessage {
   hasContent: boolean;
 }
 
+export interface Account {
+  userId: string;
+  role: AccountRole;
+  displayName: string;
+  username: string | null;
+  status: AccountStatus;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface ForwardLog {
   id: number;
   ruleId: number | null;
+  ownerUserId: string | null;
   sourceChatId: string | null;
   messageId: number | null;
   level: 'info' | 'warn' | 'error';
